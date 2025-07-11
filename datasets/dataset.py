@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import interp1d
 import pickle
 import os
+from utils import qinterp
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,20 @@ class Sequence(ABC):
         super().__init_subclass__(**kwargs)
         cls.subclasses[cls.__name__] = cls
 
+    def __init__(self) -> None:
+        """
+        Initialize the sequence with empty data.
+        """
+        self.data: Dict[str, Any] = {
+            "time": torch.tensor([]),
+            "dt": torch.tensor([]),
+            "acc": torch.tensor([]),
+            "gyro": torch.tensor([]),
+            "gt_orientation": pp.SO3(torch.tensor([])),
+            "gt_translation": torch.tensor([]),
+            "velocity": torch.tensor([])
+        }
+
     @abstractmethod
     def __len__(self) -> int:
         """
@@ -37,11 +52,131 @@ class Sequence(ABC):
         """
         raise NotImplementedError
 
-    @property
-    @abstractmethod
-    def data(self) -> Dict[str, Any]:
+    def interp_rot(self, time: np.ndarray, opt_time: np.ndarray, quat: np.ndarray) -> pp.SO3:
         """
-        Returns the sequence data.
+        Interpolate rotation data.
+        
+        Args:
+            time: Target timestamps
+            opt_time: Original timestamps
+            quat: Quaternion data in [x, y, z, w] format
+        
+        Returns:
+            Interpolated rotations as SO3 object
+        """
+        quat_wxyz = np.zeros_like(quat)
+        quat_wxyz[:, 0] = quat[:, 3]
+        quat_wxyz[:, 1:] = quat[:, :3]
+        quat_wxyz = torch.tensor(quat_wxyz)
+        imu_dt = torch.Tensor(time - opt_time[0])
+        gt_dt = torch.Tensor(opt_time - opt_time[0])
+
+        quat = qinterp(quat_wxyz, gt_dt, imu_dt).double()
+        quat_xyzw = torch.zeros_like(quat)
+        quat_xyzw[:, 3] = quat[:, 0]
+        quat_xyzw[:, :3] = quat[:, 1:]
+        return pp.SO3(quat_xyzw)
+
+    def interp_xyz(self, time: np.ndarray, opt_time: np.ndarray, xyz: np.ndarray) -> torch.Tensor:
+        """
+        Interpolate position or velocity data.
+        
+        Args:
+            time: Target timestamps
+            opt_time: Original timestamps
+            xyz: Position or velocity data
+            
+        Returns:
+            Interpolated data as tensor
+        """
+        intep_x = np.interp(time, xp=opt_time, fp=xyz[:, 0])
+        intep_y = np.interp(time, xp=opt_time, fp=xyz[:, 1])
+        intep_z = np.interp(time, xp=opt_time, fp=xyz[:, 2])
+
+        inte_xyz = np.stack([intep_x, intep_y, intep_z]).transpose()
+        return torch.tensor(inte_xyz)
+
+    def update_coordinate(self, coordinate: Optional[str], mode: Optional[str]) -> None:
+        """
+        Updates the data (imu / velocity) based on the required mode.
+        
+        Args:
+            coordinate: The target coordinate system ('glob_coord' or 'body_coord')
+            mode: The dataset mode, only rotating the velocity during training
+        """
+        if coordinate is None:
+            logger.info("No coordinate system provided. Skipping update.")
+            return
+        try:
+            if coordinate == "glob_coord":
+                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"]
+                self.data["acc"] = self.data["gt_orientation"] @ self.data["acc"]
+            elif coordinate == "body_coord":
+                self.g_vector = self.data["gt_orientation"].Inv() @ self.g_vector
+                if mode != "infevaluate" and mode != "inference":
+                    self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
+            else:
+                raise ValueError(f"Unsupported coordinate system: {coordinate}")
+        except Exception as e:
+            logger.error("An error occurred while updating coordinates: %s", e)
+            raise e
+
+    def set_orientation(self, exp_path: Optional[str], data_name: str, rotation_type: Optional[str]) -> None:
+        """
+        Sets the ground truth orientation based on the provided rotation.
+        
+        Args:
+            exp_path: Path to the pickle file containing orientation data
+            data_name: Name of the data sequence
+            rotation_type: The type of rotation (AirIMU corrected orientation / raw imu Pre-integration)
+        """
+        if rotation_type is None or rotation_type == "None" or rotation_type.lower() == "gtrot":
+            return
+        try:
+            with open(exp_path, 'rb') as file:
+                loaded_data = pickle.load(file)
+
+            state = loaded_data[data_name]
+
+            if rotation_type.lower() == "airimu":
+                self.data["gt_orientation"] = state['airimu_rot']
+            elif rotation_type.lower() == "integration":
+                self.data["gt_orientation"] = state['inte_rot']
+            else:
+                logger.error("Unsupported rotation type: %s", rotation_type)
+                raise ValueError(f"Unsupported rotation type: {rotation_type}")
+        except FileNotFoundError:
+            logger.error("The file %s was not found.", exp_path)
+            raise
+
+    def remove_gravity(self, remove_g: bool) -> None:
+        """
+        Remove gravity from accelerometer measurements.
+        
+        Args:
+            remove_g: Whether to remove gravity
+        """
+        if remove_g is True:
+            logger.info("Gravity has been removed")
+            self.data["acc"] -= self.g_vector
+
+    @abstractmethod
+    def load_imu(self, folder: str) -> None:
+        """
+        Load IMU data from files.
+        
+        Args:
+            folder: Path to the data folder
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_gt(self, folder: str) -> None:
+        """
+        Load ground truth data from files.
+        
+        Args:
+            folder: Path to the data folder
         """
         raise NotImplementedError
 
@@ -63,23 +198,14 @@ class IMUSequence(Sequence):
         **kwargs: Any
     ) -> None:
         super().__init__()
-        (
-            self.data_root,
-            self.data_name,
-            self.data,
-            self.ts,
-            self.targets,
-            self.orientations,
-            self.gt_pos,
-            self.gt_ori,
-        ) = (data_root, data_name, dict(), None, None, None, None, None)
-        
+        self.data_root = data_root
+        self.data_name = data_name
         self.dtype = torch.double
         self.g_vector = torch.tensor([0, 0, gravity], dtype=self.dtype)
 
     def __len__(self) -> int:
         """Returns the length of the sequence."""
-        return self.data["time"].shape[0]
+        return len(self.data["time"])
 
     def interp_rot(self, time: np.ndarray, opt_time: np.ndarray, quat: np.ndarray) -> pp.SO3:
         """
