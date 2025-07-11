@@ -72,16 +72,16 @@ if __name__ == '__main__':
 
     if args.load is None:
         ckpt_path = os.path.join(conf.general.exp_dir, "ckpt/best_model.ckpt")
-    else:
+    elif os.path.exists(os.path.join(conf.general.exp_dir, "ckpt", args.load)):
         ckpt_path = os.path.join(conf.general.exp_dir, "ckpt", args.load)
-
-    if os.path.exists(ckpt_path):
-        checkpoint = torch.load(ckpt_path, map_location=torch.device(args.device),weights_only=True)
-        print("loaded state dict %s in epoch %i"%(ckpt_path, checkpoint["epoch"]))
-        network.load_state_dict(checkpoint["model_state_dict"])
+    elif os.path.exists(args.load):
+        ckpt_path = args.load
     else:
         raise KeyError(f"No model loaded {ckpt_path}")
-        sys.exit()
+
+    checkpoint = torch.load(ckpt_path, map_location=torch.device(args.device),weights_only=True)
+    print("loaded state dict %s in epoch %i"%(ckpt_path, checkpoint["epoch"]))
+    network.load_state_dict(checkpoint["model_state_dict"])
         
     if 'collate' in conf.dataset.keys():
         collate_fn = collate_fcs[conf.dataset.collate.type]
