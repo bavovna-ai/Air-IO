@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Any, Dict, Tuple
 import tqdm, wandb
 from model import net_dict
 
@@ -21,13 +22,26 @@ from utils import (cat_state, move_to, save_ckpt, save_state,
                    write_wandb)
 import copy
 
-def train(network, loader, confs, epoch, optimizer):
+def train(network: torch.nn.Module, 
+          loader: Data.DataLoader, 
+          confs: Dict[str, Any], 
+          epoch: int, 
+          optimizer: torch.optim.Optimizer) -> Dict[str, float]:
     """
-    Train network for one epoch using a specified data loader
-    Outputs all targets, predicts, predicted covariance params, and losses
+    Train network for one epoch using a specified data loader.
+
+    Args:
+        network (torch.nn.Module): The neural network model to train.
+        loader (Data.DataLoader): The data loader for training data.
+        confs (Dict[str, Any]): A dictionary of configurations.
+        epoch (int): The current epoch number.
+        optimizer (torch.optim.Optimizer): The optimizer for training.
+
+    Returns:
+        Dict[str, float]: A dictionary containing the average loss and covariance.
     """
     network.train()
-    losses, pred_cov = 0, 0
+    losses, pred_cov = 0.0, 0.0
 
     t_range = tqdm.tqdm(loader)
     for i, (data,_, label) in enumerate(t_range):
@@ -55,10 +69,23 @@ def train(network, loader, confs, epoch, optimizer):
     return {"loss": (losses / (i + 1)), "cov": (pred_cov / (i + 1))}
 
 
-def test(network, loader, confs):
+def test(network: torch.nn.Module, 
+         loader: Data.DataLoader, 
+         confs: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Test the network using a specified data loader.
+
+    Args:
+        network (torch.nn.Module): The neural network model to test.
+        loader (Data.DataLoader): The data loader for testing data.
+        confs (Dict[str, Any]): A dictionary of configurations.
+
+    Returns:
+        Dict[str, float]: A dictionary containing the average loss and covariance.
+    """
     network.eval() 
     with torch.no_grad():
-        losses, pred_cov = 0, 0
+        losses, pred_cov = 0.0, 0.0
 
         t_range = tqdm.tqdm(loader)
         for i, (data, _, label) in enumerate(t_range):
@@ -88,7 +115,23 @@ def test(network, loader, confs):
     return {"loss": (losses / (i + 1)), "cov": (pred_cov / (i + 1))}
 
 
-def evaluate(network, loader, confs, silent_tqdm=False):
+def evaluate(network: torch.nn.Module, 
+             loader: Data.DataLoader, 
+             confs: Dict[str, Any], 
+             silent_tqdm: bool = False) -> Dict[str, Any]:
+    """
+    Evaluate the network using a specified data loader.
+
+    Args:
+        network (torch.nn.Module): The neural network model to evaluate.
+        loader (Data.DataLoader): The data loader for evaluation data.
+        confs (Dict[str, Any]): A dictionary of configurations.
+        silent_tqdm (bool, optional): Whether to disable the tqdm progress bar. Defaults to False.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing evaluation results, including states,
+                        covariance, losses, and labels.
+    """
     network.eval()
     evaluate_states, loss_states, labels = {}, {}, {}
     pred_cov = []

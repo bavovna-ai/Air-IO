@@ -2,15 +2,43 @@ import torch
 from .loss_func import loss_fc_list, diag_ln_cov_loss
 from utils import report_hasNan
 import numpy as np
+from typing import Callable, Dict, Any, Tuple
 
-def motion_loss_(fc, pred, targ):
+def motion_loss_(fc: Callable[..., torch.Tensor], 
+                 pred: torch.Tensor, 
+                 targ: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Calculates the motion loss and distance.
+
+    Args:
+        fc (Callable[..., torch.Tensor]): The loss function.
+        pred (torch.Tensor): The predicted tensor.
+        targ (torch.Tensor): The target tensor.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: The calculated loss and the distance.
+    """
     dist = pred - targ
     loss = fc(dist)
     return loss, dist
 
-def get_motion_loss(inte_state, label, confs):
+def get_motion_loss(inte_state: Dict[str, torch.Tensor], 
+                    label: torch.Tensor, 
+                    confs: Any) -> Dict[str, torch.Tensor]:
+    """
+    Calculates the total motion loss.
+
+    Args:
+        inte_state (Dict[str, torch.Tensor]): The integrated state from the model.
+        label (torch.Tensor): The ground truth label.
+        confs (Any): The configuration object.
+
+    Returns:
+        Dict[str, torch.Tensor]: A dictionary containing the total loss and covariance loss.
+    """
     ## The state loss for evaluation
-    loss, cov_loss = 0, {}
+    loss = torch.tensor(0.0, device=label.device)
+    cov_loss = torch.tensor(0.0, device=label.device)
     loss_fc = loss_fc_list[confs.loss]
     
     vel_loss, vel_dist = motion_loss_(loss_fc, inte_state['net_vel'],label)
@@ -29,13 +57,23 @@ def get_motion_loss(inte_state, label, confs):
     return {'loss':loss, 'cov_loss':cov_loss}
 
 
-def get_motion_RMSE(inte_state, label, confs):
-    '''
-    get the RMSE of the last state in one segment
-    '''
-    def _RMSE(x):
+def get_motion_RMSE(inte_state: Dict[str, torch.Tensor], 
+                    label: torch.Tensor, 
+                    confs: Any) -> Dict[str, torch.Tensor]:
+    """
+    Calculates the Root Mean Square Error (RMSE) for motion.
+
+    Args:
+        inte_state (Dict[str, torch.Tensor]): The integrated state from the model.
+        label (torch.Tensor): The ground truth label.
+        confs (Any): The configuration object.
+
+    Returns:
+        Dict[str, torch.Tensor]: A dictionary containing the RMSE loss, distance, and covariance loss.
+    """
+    def _RMSE(x: torch.Tensor) -> torch.Tensor:
         return torch.sqrt((x.norm(dim=-1)**2).mean())
-    cov_loss = 0
+    cov_loss = torch.tensor(0.0, device=label.device)
     dist = (inte_state['net_vel'] - label)
     dist = torch.mean(dist,dim=-2)
     loss = _RMSE(dist)[None,...]

@@ -1,8 +1,21 @@
 import os, argparse
 import numpy as np
+from numpy.typing import NDArray
 
-def interp_xyz(time, opt_time, xyz):
+def interp_xyz(time: NDArray[np.float64], 
+               opt_time: NDArray[np.float64], 
+               xyz: NDArray[np.float64]) -> NDArray[np.float64]:
+    """
+    Interpolates XYZ coordinates to a new time base.
 
+    Args:
+        time (NDArray[np.float64]): The time array to interpolate to.
+        opt_time (NDArray[np.float64]): The time array of the original XYZ data.
+        xyz (NDArray[np.float64]): The XYZ coordinates to interpolate.
+
+    Returns:
+        NDArray[np.float64]: The interpolated XYZ coordinates.
+    """
     intep_x = np.interp(time, xp=opt_time, fp = xyz[:,0])
     intep_y = np.interp(time, xp=opt_time, fp = xyz[:,1])
     intep_z = np.interp(time, xp=opt_time, fp = xyz[:,2])
@@ -10,8 +23,20 @@ def interp_xyz(time, opt_time, xyz):
     inte_xyz = np.stack([intep_x, intep_y, intep_z]).transpose()
     return inte_xyz
 
-def gradientvelo(xyz, imu_time, time):
+def gradientvelo(xyz: NDArray[np.float64], 
+                 imu_time: NDArray[np.float64], 
+                 time: NDArray[np.float64]) -> NDArray[np.float64]:
+    """
+    Calculates velocity by differentiating position data.
 
+    Args:
+        xyz (NDArray[np.float64]): The XYZ coordinates.
+        imu_time (NDArray[np.float64]): The IMU timestamps.
+        time (NDArray[np.float64]): The timestamps for the XYZ data.
+
+    Returns:
+        NDArray[np.float64]: The calculated velocity.
+    """
     inte_xyz = interp_xyz(imu_time, time, xyz)
     time_interval = imu_time[1:] - imu_time[:-1]
     time_interval = np.append(time_interval, time_interval.mean())

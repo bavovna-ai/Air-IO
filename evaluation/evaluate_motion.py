@@ -10,6 +10,7 @@ import pypose as pp
 
 import torch
 import torch.utils.data as Data
+from typing import Dict
 
 from pyhocon import ConfigFactory
 from datasets import imu_seq_collate,SeqDataset
@@ -19,7 +20,21 @@ from utils.velocity_integrator import Velocity_Integrator, integrate_pos
 
 from utils.visualize_state import visualize_motion
  
-def calculate_rte(outstate,duration, step_size):
+def calculate_rte(outstate: Dict[str, torch.Tensor], 
+                  duration: int, 
+                  step_size: int) -> torch.Tensor:
+    """
+    Calculates the Relative Trajectory Error (RTE).
+
+    Args:
+        outstate (Dict[str, torch.Tensor]): The output state dictionary, 
+                                            containing 'poses' and 'poses_gt'.
+        duration (int): The duration of the segments.
+        step_size (int): The step size between segments.
+
+    Returns:
+        torch.Tensor: The calculated Relative Trajectory Error.
+    """
     poses, poses_gt = outstate['poses'],outstate['poses_gt'][1:,:]
 
     dp = poses[:, duration-1:] - poses[:, :-duration+1]

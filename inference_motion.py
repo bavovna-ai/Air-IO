@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+from typing import Any, Dict
 
 import torch.utils.data as Data
 import argparse
@@ -15,13 +16,24 @@ from model import net_dict
 from utils import *
 
 
-def inference(network, loader, confs):
+def inference(network: torch.nn.Module, 
+              loader: Data.DataLoader, 
+              confs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
     '''
-    Correction inference
-    save the corrections generated from the network.
+    Correction inference.
+
+    Saves the corrections generated from the network.
+
+    Args:
+        network (torch.nn.Module): The neural network model for inference.
+        loader (Data.DataLoader): The data loader for inference data.
+        confs (Dict[str, Any]): A dictionary of configurations.
+
+    Returns:
+        Dict[str, torch.Tensor]: A dictionary containing the evaluated states.
     '''
     network.eval()
-    evaluate_states = {}
+    evaluate_states: Dict[str, Any] = {}
     with torch.no_grad():
         inte_state = None
         for data, _, label in tqdm.tqdm(loader):

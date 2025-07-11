@@ -1,35 +1,49 @@
 import torch
 import tqdm
+from typing import Dict, Any, List
+import pypose as pp
+import torch.utils.data as Data
 
 from utils import move_to
 
 
 def integrate(
-    integrator,
-    loader,
-    init,
-    device="cpu",
-    gtinit=False,
-    save_full_traj=False,
-    use_gt_rot=True,
-):
+    integrator: torch.nn.Module,
+    loader: Data.DataLoader,
+    init: Dict[str, torch.Tensor],
+    device: str = "cpu",
+    gtinit: bool = False,
+    save_full_traj: bool = False,
+    use_gt_rot: bool = True,
+) -> Dict[str, torch.Tensor]:
     """
-    gtinit:
-        If gtinit is True, use the ground truth initial state to integrate the small segments.
-        This is used for the evaluation of the local pattern of the trajectory.
-        If gtinit is False, use the predicted initial state to integrate the segments.
-        Which is equivalent to integrate through the entire trajectory.
-    save_full_traj:
-        If save_full_traj is True, save the full trajectory.
-        If save_full_traj is False, save the last frame of each segment.
+    Integrates motion data using a given integrator model.
+
+    Args:
+        integrator (torch.nn.Module): The integrator model.
+        loader (Data.DataLoader): The data loader for motion data.
+        init (Dict[str, torch.Tensor]): The initial state, containing 'pos', 'rot', and 'vel'.
+        device (str, optional): The device to run the integration on. Defaults to "cpu".
+        gtinit (bool, optional): If True, use ground truth initial state for each segment.
+                                 This is for evaluating the local trajectory pattern.
+                                 If False, use the predicted initial state to integrate,
+                                 which is equivalent to integrating the entire trajectory.
+                                 Defaults to False.
+        save_full_traj (bool, optional): If True, save the full trajectory.
+                                         If False, save only the last frame of each segment.
+                                         Defaults to False.
+        use_gt_rot (bool, optional): If True, use ground truth rotation. Defaults to True.
+
+    Returns:
+        Dict[str, torch.Tensor]: A dictionary containing the integrated states and ground truth.
     """
     # states to ouput
     integrator.eval()
-    out_state = dict()
+    out_state: Dict[str, List[torch.Tensor]] = dict()
     poses, poses_gt = [init["pos"][None, :]], [init["pos"][None, :]]
     orientations, orientations_gt = [init["rot"][None, :]], [init["rot"][None, :]]
     vel, vel_gt = [init["vel"][None, :]], [init["vel"][None, :]]
-    covs = [torch.zeros(9, 9)]
+    covs: List[torch.Tensor] = [torch.zeros(9, 9)]
     for idx, data in tqdm.tqdm(enumerate(loader)):
         data = move_to(data, device)
         if gtinit:
