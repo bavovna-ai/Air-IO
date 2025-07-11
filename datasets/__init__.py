@@ -5,6 +5,7 @@ from .EuRoCdataset import EuRoC
 from .BlackBirddataset import BlackBird
 from .Pegasusdataset import Pegasus
 from .ArduPilotdataset import ArduPilot
+Euroc = EuRoC
 
 DATASET_MAPPING = {
     'euroc': EuRoC,

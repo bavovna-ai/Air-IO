@@ -31,16 +31,17 @@ class Sequence(ABC):
         super().__init_subclass__(**kwargs)
         cls.subclasses[cls.__name__] = cls
 
-    def __init__(self) -> None:
+    def __init__(self, dtype = torch.double) -> None:
         """
         Initialize the sequence with empty data.
         """
+        self.dtype = dtype
         self.data: Dict[str, Any] = {
             "time": torch.tensor([]),
             "dt": torch.tensor([]),
             "acc": torch.tensor([]),
             "gyro": torch.tensor([]),
-            "gt_orientation": pp.SO3(torch.tensor([])),
+            "gt_orientation": pp.SO3(torch.tensor([[0., 0., 0., 1.]], dtype=self.dtype)),
             "gt_translation": torch.tensor([]),
             "velocity": torch.tensor([])
         }
@@ -369,6 +370,7 @@ class SeqDataset(Data.Dataset):
         super().__init__()
 
         self.DataClass = Sequence.subclasses
+        self.DataClass['Euroc'] = self.DataClass.get('EuRoC')
         self.conf = conf
         self.seq = self.DataClass[name](root, dataname, **self.conf)
         self.data = self.seq.data
@@ -636,6 +638,7 @@ class SeqeuncesDataset(Data.Dataset):
             self.mode = mode
 
         self.DataClass = Sequence.subclasses
+        self.DataClass['Euroc'] = self.DataClass.get('EuRoC')
 
         ## the design of datapath provide a quick way to revisit a specific sequence, but introduce some inconsistency
         if data_path is None:

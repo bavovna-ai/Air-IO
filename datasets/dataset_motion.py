@@ -57,7 +57,7 @@ class SeqeuncesMotionDataset(SeqeuncesDataset):
         seq = self.DataClass[conf.name](
             data_root, data_name, **self.conf
         )
-        seq_len = seq.get_length() - 1
+        seq_len = len(seq) - 1
         window_size, step_size = conf.window_size, conf.step_size
         start_frame, end_frame = 0, seq_len
 

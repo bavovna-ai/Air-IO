@@ -188,7 +188,7 @@ class BlackBird(IMUSequence):
         self.data["gt_time"] = torch.tensor(times_imu, dtype=self.dtype)
         self.data["time"] = torch.tensor(times_imu, dtype=self.dtype)
         self.data["dt"] = (self.data["time"][1:] - self.data["time"][:-1])[:, None]
-        self.data["mask"] = torch.ones(self.data["time"].shape[0], dtype=torch.bool, dtype=self.dtype)
+        self.data["mask"] = torch.ones(self.data["time"].shape[0], dtype=torch.bool)
 
     def load_imu(self, folder: str, data_name: Optional[str] = None) -> None:
         """Load IMU data from CSV file."""

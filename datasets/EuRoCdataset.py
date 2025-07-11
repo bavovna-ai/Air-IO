@@ -10,7 +10,7 @@ from .dataset import IMUSequence
 
 logger = logging.getLogger(__name__)
 
-class Euroc(IMUSequence):
+class EuRoC(IMUSequence):
     def __init__(
         self,
         data_root: str,
