@@ -1,46 +1,50 @@
 import argparse
+import logging
+from typing import List, Dict, Any, Optional, Union, Tuple
 
 import numpy as np
 import torch
 import torch.utils.data as Data
 from pyhocon import ConfigFactory
 from .dataset import Sequence, SeqeuncesDataset
-import math
 import pypose as pp
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class SeqeuncesMotionDataset(SeqeuncesDataset):
     def __init__(
         self,
-        data_set_config,
-        mode=None,
-        data_path=None,
-        data_root=None,
-        device="cuda:0",
-    ):
+        data_set_config: ConfigFactory,
+        mode: Optional[str] = None,
+        data_path: Optional[str] = None,
+        data_root: Optional[str] = None,
+        device: str = "cuda:0",
+    ) -> None:
         super().__init__(
-        data_set_config=data_set_config,
-        mode=mode,
-        data_path=data_path,
-        data_root=data_root,
-        device=device,
+            data_set_config=data_set_config,
+            mode=mode,
+            data_path=data_path,
+            data_root=data_root,
+            device=device,
         )
-        print(f"******* Loading {data_set_config.mode} dataset *******")
-        print(f"loaded: {data_set_config.data_list[0]['data_root']}")
+        logger.info(f"Loading {data_set_config.mode} dataset")
+        logger.info(f"Loaded: {data_set_config.data_list[0]['data_root']}")
+        
         if "coordinate" in data_set_config:
-            print(f"coordinate: {data_set_config.coordinate}")
+            logger.info(f"Coordinate: {data_set_config.coordinate}")
         if "remove_g" in data_set_config and data_set_config.remove_g is True:
-            print(f"gravity has been removed")
+            logger.info("Gravity has been removed")
         if "rot_type" in data_set_config:
             if data_set_config.rot_type is None:
-                print(f"using groundtruth orientation")
+                logger.info("Using groundtruth orientation")
             elif data_set_config.rot_type.lower() == "airimu":
-                print(f"Using AirIMU orientation loaded from {data_set_config.rot_path}.")
+                logger.info(f"Using AirIMU orientation loaded from {data_set_config.rot_path}")
             elif data_set_config.rot_type.lower() == "integration":
-                print(f"Using pre-integration orientation loaded from {data_set_config.rot_path}.")
-        print(f"gravity: {data_set_config.gravity}")
+                logger.info(f"Using pre-integration orientation loaded from {data_set_config.rot_path}")
+        logger.info(f"Gravity: {data_set_config.gravity}")
 
-    
-    def load_data(self, seq, start_frame, end_frame):
+    def load_data(self, seq: Sequence, start_frame: int, end_frame: int) -> None:
         self.ts.append(seq.data["time"][start_frame:end_frame + 1])
         self.acc.append(seq.data["acc"][start_frame:end_frame])
         self.gyro.append(seq.data["gyro"][start_frame:end_frame])
@@ -49,20 +53,18 @@ class SeqeuncesMotionDataset(SeqeuncesDataset):
         self.gt_ori.append(seq.data["gt_orientation"][start_frame : end_frame + 1])
         self.gt_velo.append(seq.data["velocity"][start_frame : end_frame + 1])
 
-    def construct_index_map(self, conf, data_root, data_name, seq_id):
+    def construct_index_map(self, conf: ConfigFactory, data_root: str, data_name: str, seq_id: int) -> None:
         seq = self.DataClass[conf.name](
-            data_root, data_name,  **self.conf
+            data_root, data_name, **self.conf
         )
         seq_len = seq.get_length() - 1
         window_size, step_size = conf.window_size, conf.step_size
-        ## seting the starting and ending duration with different trianing mode
         start_frame, end_frame = 0, seq_len
 
         if self.mode == 'train_70':
             end_frame = np.floor(seq_len * 0.7).astype(int)
         elif self.mode == 'test_30':
             start_frame = np.floor(seq_len * 0.7).astype(int)
-
 
         _duration = end_frame - start_frame
         if self.mode == "inference":
@@ -77,7 +79,6 @@ class SeqeuncesMotionDataset(SeqeuncesDataset):
             if self.index_map[-1][2] < _duration:
                 self.index_map += [[seq_id, self.index_map[-1][2], seq_len]]
         elif self.mode == "evaluate":
-            # adding the last piece for evaluation
             self.index_map += [
                 [seq_id, j, j + window_size]
                 for j in range(0, _duration - window_size, step_size)
@@ -90,37 +91,36 @@ class SeqeuncesMotionDataset(SeqeuncesDataset):
             ]
             self.index_map += sub_index_map
 
-        ## Loading the data from each sequence into
         self.load_data(seq, start_frame, end_frame)
-        
 
-    def __getitem__(self, item):
-        seq_id, frame_id, end_frame_id = self.index_map[item][0], self.index_map[item][1], self.index_map[item][2]
+    def __getitem__(self, item: int) -> Dict[str, torch.Tensor]:
+        seq_id, frame_id, end_frame_id = self.index_map[item]
         data = {
-            'timestamp':  self.ts[seq_id][frame_id:end_frame_id + 1],
+            'timestamp': self.ts[seq_id][frame_id:end_frame_id + 1],
             'dt': self.dt[seq_id][frame_id: end_frame_id+1],
-            'acc':self.acc[seq_id][frame_id: end_frame_id],
-            'gyro':self.gyro[seq_id][frame_id: end_frame_id],
-            'rot':self.gt_ori[seq_id][frame_id: end_frame_id]
+            'acc': self.acc[seq_id][frame_id: end_frame_id],
+            'gyro': self.gyro[seq_id][frame_id: end_frame_id],
+            'rot': self.gt_ori[seq_id][frame_id: end_frame_id]
         }
         init_state = {
-            'init_rot':self.gt_ori[seq_id][frame_id][None, ...],
-            'init_pos':self.gt_pos[seq_id][frame_id][None, ...],
-            'init_vel':self.gt_velo[seq_id][frame_id][None, ...],
+            'init_rot': self.gt_ori[seq_id][frame_id][None, ...],
+            'init_pos': self.gt_pos[seq_id][frame_id][None, ...],
+            'init_vel': self.gt_velo[seq_id][frame_id][None, ...],
         }
         label = {
-            'gt_pos':self.gt_pos[seq_id][frame_id : end_frame_id+1],
-            'gt_rot':self.gt_ori[seq_id][frame_id : end_frame_id+1],
-            'gt_vel':self.gt_velo[seq_id][frame_id : end_frame_id+1],
+            'gt_pos': self.gt_pos[seq_id][frame_id : end_frame_id+1],
+            'gt_rot': self.gt_ori[seq_id][frame_id : end_frame_id+1],
+            'gt_vel': self.gt_velo[seq_id][frame_id : end_frame_id+1],
         }
         return {**data, **init_state, **label}
 
-    def get_init_value(self):
+    def get_init_value(self) -> Dict[str, torch.Tensor]:
         return {
             "pos": self.data["gt_translation"][:1],
             "rot": self.data["gt_orientation"][:1],
             "vel": self.data["velocity"][:1],
         }
+
 if __name__ == "__main__":
     from datasets.dataset_utils import custom_collate
 
@@ -143,6 +143,6 @@ if __name__ == "__main__":
 
     for i, (data, init, _label) in enumerate(loader):
         for k in data:
-            print(k, ":", data[k].shape)
+            logger.info(f"{k}: {data[k].shape}")
         for k in init:
-            print(k, ":", init[k].shape)
+            logger.info(f"{k}: {init[k].shape}")

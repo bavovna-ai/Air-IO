@@ -1,6 +1,9 @@
+from typing import List, Dict, Tuple, Any, Optional, Union
+
 import torch
-import math
-def imu_seq_collate(data):
+from torch import Tensor
+
+def imu_seq_collate(data: List[Dict[str, Tensor]]) -> Dict[str, Tensor]:
     acc = torch.stack([d["acc"] for d in data])
     gyro = torch.stack([d["gyro"] for d in data])
 
@@ -27,7 +30,7 @@ def imu_seq_collate(data):
     }
 
 
-def custom_collate(data):
+def custom_collate(data: List[Dict[str, Tensor]]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Dict[str, Tensor]]:
     dt = torch.stack([d["dt"] for d in data])
     acc = torch.stack([d["acc"] for d in data])
     gyro = torch.stack([d["gyro"] for d in data])
@@ -60,11 +63,12 @@ def custom_collate(data):
         },
     )
 
-def motion_collate_data(data):
-    timestamp = None
-    timestamp = [d['timestamp'] for d in data if 'timestamp' in d]
-    if timestamp:
-        timestamp = torch.stack(timestamp)
+def motion_collate_data(data: List[Dict[str, Tensor]]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Dict[str, Tensor]]:
+    timestamp: Optional[Tensor] = None
+    timestamp_list = [d['timestamp'] for d in data if 'timestamp' in d]
+    if timestamp_list:
+        timestamp = torch.stack(timestamp_list)
+    
     acc = torch.stack([d['acc'] for d in data])
     gyro = torch.stack([d['gyro'] for d in data])
     rot = torch.stack([d['rot'] for d in data])
@@ -99,15 +103,18 @@ def motion_collate_data(data):
         },
     )
     
-def motion_collate(data, **kwargs):
+def motion_collate(
+    data: List[Dict[str, Tensor]], 
+    **kwargs: Any
+) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Dict[str, Tensor]]:
     input_data, init_state, label = motion_collate_data(data)
-    if len(kwargs) > 0:
+    if kwargs:  # Changed from len(kwargs) > 0 for better Python style
         # TODO: Implement data augmentation if needed
         pass  
     return input_data, init_state, label
 
     
-collate_fcs = {
+collate_fcs: Dict[str, Any] = {
     "base": custom_collate,
     'motion': motion_collate,
 }

@@ -1,11 +1,19 @@
 import argparse
+import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Type
+from typing import Dict, Any, List, Optional, Type, Union
 
 import numpy as np
 import torch
 import torch.utils.data as Data
 from pyhocon import ConfigFactory
+import pypose as pp
+from scipy.spatial.transform import Rotation, Slerp
+from scipy.interpolate import interp1d
+import pickle
+import os
+
+logger = logging.getLogger(__name__)
 
 
 class Sequence(ABC):
@@ -23,7 +31,7 @@ class Sequence(ABC):
         cls.subclasses[cls.__name__] = cls
 
     @abstractmethod
-    def get_length(self) -> int:
+    def __len__(self) -> int:
         """
         Returns the length of the sequence.
         """
@@ -34,6 +42,170 @@ class Sequence(ABC):
     def data(self) -> Dict[str, Any]:
         """
         Returns the sequence data.
+        """
+        raise NotImplementedError
+
+
+class IMUSequence(Sequence):
+    """
+    An intermediate class for IMU sequence data with common functionality.
+    """
+    def __init__(
+        self,
+        data_root: str,
+        data_name: str,
+        coordinate: Optional[str] = None,
+        mode: Optional[str] = None,
+        rot_path: Optional[str] = None,
+        rot_type: Optional[str] = None,
+        gravity: float = 9.81007,
+        remove_g: bool = False,
+        **kwargs: Any
+    ) -> None:
+        super().__init__()
+        (
+            self.data_root,
+            self.data_name,
+            self.data,
+            self.ts,
+            self.targets,
+            self.orientations,
+            self.gt_pos,
+            self.gt_ori,
+        ) = (data_root, data_name, dict(), None, None, None, None, None)
+        
+        self.dtype = torch.double
+        self.g_vector = torch.tensor([0, 0, gravity], dtype=self.dtype)
+
+    def __len__(self) -> int:
+        """Returns the length of the sequence."""
+        return self.data["time"].shape[0]
+
+    def interp_rot(self, time: np.ndarray, opt_time: np.ndarray, quat: np.ndarray) -> pp.SO3:
+        """
+        Interpolate rotation data.
+        
+        Args:
+            time: Target timestamps
+            opt_time: Original timestamps
+            quat: Quaternion data in [x, y, z, w] format
+        
+        Returns:
+            Interpolated rotations as SO3 object
+        """
+        quat_wxyz = np.zeros_like(quat)
+        quat_wxyz[:, 0] = quat[:, 3]
+        quat_wxyz[:, 1:] = quat[:, :3]
+        quat_wxyz = torch.tensor(quat_wxyz)
+        imu_dt = torch.Tensor(time - opt_time[0])
+        gt_dt = torch.Tensor(opt_time - opt_time[0])
+
+        quat = qinterp(quat_wxyz, gt_dt, imu_dt).double()
+        quat_xyzw = torch.zeros_like(quat)
+        quat_xyzw[:, 3] = quat[:, 0]
+        quat_xyzw[:, :3] = quat[:, 1:]
+        return pp.SO3(quat_xyzw)
+
+    def interp_xyz(self, time: np.ndarray, opt_time: np.ndarray, xyz: np.ndarray) -> torch.Tensor:
+        """
+        Interpolate position or velocity data.
+        
+        Args:
+            time: Target timestamps
+            opt_time: Original timestamps
+            xyz: Position or velocity data
+            
+        Returns:
+            Interpolated data as tensor
+        """
+        intep_x = np.interp(time, xp=opt_time, fp=xyz[:, 0])
+        intep_y = np.interp(time, xp=opt_time, fp=xyz[:, 1])
+        intep_z = np.interp(time, xp=opt_time, fp=xyz[:, 2])
+
+        inte_xyz = np.stack([intep_x, intep_y, intep_z]).transpose()
+        return torch.tensor(inte_xyz)
+
+    def update_coordinate(self, coordinate: Optional[str], mode: Optional[str]) -> None:
+        """
+        Updates the data (imu / velocity) based on the required mode.
+        
+        Args:
+            coordinate: The target coordinate system ('glob_coord' or 'body_coord')
+            mode: The dataset mode, only rotating the velocity during training
+        """
+        if coordinate is None:
+            logger.info("No coordinate system provided. Skipping update.")
+            return
+        try:
+            if coordinate == "glob_coord":
+                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"]
+                self.data["acc"] = self.data["gt_orientation"] @ self.data["acc"]
+            elif coordinate == "body_coord":
+                self.g_vector = self.data["gt_orientation"].Inv() @ self.g_vector
+                if mode != "infevaluate" and mode != "inference":
+                    self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
+            else:
+                raise ValueError(f"Unsupported coordinate system: {coordinate}")
+        except Exception as e:
+            logger.error("An error occurred while updating coordinates: %s", e)
+            raise e
+
+    def set_orientation(self, exp_path: Optional[str], data_name: str, rotation_type: Optional[str]) -> None:
+        """
+        Sets the ground truth orientation based on the provided rotation.
+        
+        Args:
+            exp_path: Path to the pickle file containing orientation data
+            data_name: Name of the data sequence
+            rotation_type: The type of rotation (AirIMU corrected orientation / raw imu Pre-integration)
+        """
+        if rotation_type is None or rotation_type == "None" or rotation_type.lower() == "gtrot":
+            return
+        try:
+            with open(exp_path, 'rb') as file:
+                loaded_data = pickle.load(file)
+
+            state = loaded_data[data_name]
+
+            if rotation_type.lower() == "airimu":
+                self.data["gt_orientation"] = state['airimu_rot']
+            elif rotation_type.lower() == "integration":
+                self.data["gt_orientation"] = state['inte_rot']
+            else:
+                logger.error("Unsupported rotation type: %s", rotation_type)
+                raise ValueError(f"Unsupported rotation type: {rotation_type}")
+        except FileNotFoundError:
+            logger.error("The file %s was not found.", exp_path)
+            raise
+
+    def remove_gravity(self, remove_g: bool) -> None:
+        """
+        Remove gravity from accelerometer measurements.
+        
+        Args:
+            remove_g: Whether to remove gravity
+        """
+        if remove_g is True:
+            logger.info("Gravity has been removed")
+            self.data["acc"] -= self.g_vector
+
+    @abstractmethod
+    def load_imu(self, folder: str) -> None:
+        """
+        Load IMU data from files.
+        
+        Args:
+            folder: Path to the data folder
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_gt(self, folder: str) -> None:
+        """
+        Load ground truth data from files.
+        
+        Args:
+            folder: Path to the data folder
         """
         raise NotImplementedError
 
@@ -74,7 +246,7 @@ class SeqDataset(Data.Dataset):
         self.conf = conf
         self.seq = self.DataClass[name](root, dataname, **self.conf)
         self.data = self.seq.data
-        self.seqlen = self.seq.get_length() - 1
+        self.seqlen = self.seq.__len__() - 1
         self.gravity = conf.gravity if "gravity" in conf.keys() else 9.81007
         self.interpolate = True
 
@@ -107,7 +279,7 @@ class SeqDataset(Data.Dataset):
         if "calib" in self.conf:
             loaded_param += f", calib: {self.conf.calib}"
         loaded_param += f", interpolate: {self.interpolate}, gravity: {self.gravity}"
-        print(loaded_param)
+        logger.info(loaded_param)
 
     def __len__(self) -> int:
         """
@@ -212,10 +384,10 @@ class SeqInfDataset(SeqDataset):
             self.data["gyro"][:-1] += inference_state["correction_gyro"][:, time_cut:].cpu()[0]
 
         if "gyro_bias" in inference_state.keys():
-            print("adapted gyro bias: ", inference_state["gyro_bias"][time_cut:].cpu())
+            logger.info(f"Adapted gyro bias: {inference_state['gyro_bias'][time_cut:].cpu()}")
             self.data["gyro"][:-1] -= inference_state["gyro_bias"][time_cut:].cpu()
         if "acc_bias" in inference_state.keys():
-            print("adapted acc bias: ", inference_state["acc_bias"][time_cut:].cpu())
+            logger.info(f"Adapted acc bias: {inference_state['acc_bias'][time_cut:].cpu()}")
             self.data["acc"][:-1] -= inference_state["acc_bias"][time_cut:].cpu()
 
         if "adapt_acc" in inference_state.keys():
@@ -271,6 +443,30 @@ class SeqeuncesDataset(Data.Dataset):
     - Abandons the features of the last time frame, since there are no ground truth pose and dt
       to integrate the imu data of the last frame. So the length of the dataset is seq.get_length() - 1.
     """
+    @staticmethod
+    def find_files(root_dir: str, ext: str = ".csv") -> List[str]:
+        """
+        Find all files with a specific extension in a directory recursively.
+        
+        Args:
+            root_dir (str): Root directory to search in
+            ext (str, optional): File extension to search for (e.g. ".csv", ".parquet"). Defaults to ".csv".
+            
+        Returns:
+            List[str]: List of file paths relative to root_dir
+        """
+        if not ext.startswith("."):
+            ext = f".{ext}"
+            
+        files = []
+        for dirpath, _, filenames in os.walk(root_dir):
+            for f in filenames:
+                if f.lower().endswith(ext.lower()):  # Case-insensitive extension matching
+                    # Get path relative to root_dir
+                    rel_path = os.path.relpath(os.path.join(dirpath, f), root_dir)
+                    files.append(rel_path)
+        return sorted(files)  # Sort for deterministic ordering
+
     def __init__(
         self,
         data_set_config: Any,
@@ -318,11 +514,27 @@ class SeqeuncesDataset(Data.Dataset):
         ## the design of datapath provide a quick way to revisit a specific sequence, but introduce some inconsistency
         if data_path is None:
             for conf in data_set_config.data_list:
-                for path in conf.data_drive:
-                    self.construct_index_map(
-                        conf, conf["data_root"], path, self.seq_idx
-                    )
-                    self.seq_idx += 1
+                if "data_drive" in conf:
+                    # Use specified data_drive paths
+                    for path in conf.data_drive:
+                        self.construct_index_map(
+                            conf, conf["data_root"], path, self.seq_idx
+                        )
+                        self.seq_idx += 1
+                else:
+                    # Auto-discover files in data_root
+                    ext = conf.get("file_ext", ".csv")  # Allow configurable extension
+                    logger.info(f"No data_drive specified, scanning {conf['data_root']} for *{ext} files")
+                    files = self.find_files(conf["data_root"], ext)
+                    if not files:
+                        logger.warning(f"No *{ext} files found in {conf['data_root']}")
+                        continue
+                    logger.info(f"Found {len(files)} {ext} files")
+                    for file in files:
+                        self.construct_index_map(
+                            conf, conf["data_root"], file, self.seq_idx
+                        )
+                        self.seq_idx += 1
         ## the design of dataroot provide a quick way to introduce multiple sequences in eval set, but introduce some inconsistency
         elif data_root is None:
             conf = data_set_config.data_list[0]
@@ -331,13 +543,26 @@ class SeqeuncesDataset(Data.Dataset):
                     self.construct_index_map(conf, conf["data_root"], data_drive, self.seq_idx)
                     self.seq_idx += 1
             else:
-                 self.construct_index_map(conf, conf["data_root"], data_path, self.seq_idx)
-                 self.seq_idx += 1
+                # Auto-discover files if data_drive not specified
+                ext = conf.get("file_ext", ".csv")  # Allow configurable extension
+                logger.info(f"No data_drive specified, scanning {conf['data_root']} for *{ext} files")
+                files = self.find_files(conf["data_root"], ext)
+                if not files:
+                    # Fall back to using data_path if provided
+                    if data_path:
+                        self.construct_index_map(conf, conf["data_root"], data_path, self.seq_idx)
+                        self.seq_idx += 1
+                    else:
+                        logger.warning(f"No *{ext} files found in {conf['data_root']} and no data_path provided")
+                else:
+                    logger.info(f"Found {len(files)} {ext} files")
+                    for file in files:
+                        self.construct_index_map(conf, conf["data_root"], file, self.seq_idx)
+                        self.seq_idx += 1
         else:
             conf = data_set_config.data_list[0]
             self.construct_index_map(conf, data_root, data_path, self.seq_idx)
             self.seq_idx += 1
-
 
 
     def load_data(self, seq: Sequence, start_frame: int, end_frame: int) -> None:
@@ -373,7 +598,7 @@ class SeqeuncesDataset(Data.Dataset):
         seq = self.DataClass[conf.name](
             data_root, data_name, interpolate=self.interpolate, **self.conf
         )
-        seq_len = seq.get_length() - 1  # abandon the last imu features
+        seq_len = len(seq) - 1  # abandon the last imu features
         self.weights.append(conf.weight if 'weight' in conf else 1.)
 
         start_frame = 0
