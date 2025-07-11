@@ -1,16 +1,16 @@
 from .dataset import *
 from .dataset_motion import *
 from .dataset_utils import *
-from .EuRoCdataset import EuRoCdataset
-from .BlackBirddataset import BlackBirdDataset
-from .Pegasusdataset import PegasusDataset
-from .ArduPilotdataset import ArduPilotDataset
+from .EuRoCdataset import EuRoC
+from .BlackBirddataset import BlackBird
+from .Pegasusdataset import Pegasus
+from .ArduPilotdataset import ArduPilot
 
 DATASET_MAPPING = {
-    'euroc': EuRoCdataset,
-    'pegasus': PegasusDataset,
-    'blackbird': BlackBirdDataset,
-    'ardupilot': ArduPilotDataset,
+    'euroc': EuRoC,
+    'pegasus': Pegasus,
+    'blackbird': BlackBird,
+    'ardupilot': ArduPilot,
 }
 
 def get_dataset(config, data_dir, data_list, mode):
