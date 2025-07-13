@@ -64,7 +64,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     logger.info(("\n"*3) + str(args) + ("\n"*3))
-    config = ConfigFactory.parse_file(args.dataconf)
+    # Process config to merge with defaults
+    from model.code import process_config
+    conf = ConfigFactory.parse_file(args.config)
+    conf = process_config(conf)
+
     dataset_conf = config.inference
     logger.info(dataset_conf.keys())
 

@@ -1,6 +1,9 @@
+"""
+ArduPilot dataset reader for CSV data.
+"""
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import numpy as np
 import pandas as pd
@@ -18,6 +21,13 @@ class ArduPilot(IMUSequence):
     TimeUS, AccX, AccY, AccZ, GyrX, GyrY, GyrZ, MagX, MagY, MagZ, Alt, Roll, Pitch, Yaw,
     PN, VN, PE, VE, PD, VD, Lat, Lng, Status
     """
+    feature_dict = {
+        "acc": ["AccX", "AccY", "AccZ"],
+        "gyro": ["GyrX", "GyrY", "GyrZ"],
+        "Mag": ["MagX", "MagY", "MagZ"],
+        "Alt": ["Alt"]
+    }
+
     def __init__(
         self,
         data_root: str,
@@ -63,8 +73,9 @@ class ArduPilot(IMUSequence):
         for k in ["gt_time", "pos", "quat", "velocity"]:
             self.data[k] = self.data[k][idx_start_gt:idx_end_gt]
         
-        for k in ["time", "acc", "gyro"]:
-            self.data[k] = self.data[k][idx_start_imu:idx_end_imu]
+        for k in ["time"] + list(self.feature_names):
+            if k in self.data:
+                self.data[k] = self.data[k][idx_start_imu:idx_end_imu]
         
         # Interpolate ground truth to IMU timestamps
         self.data["gt_orientation"] = self.interp_rot(
@@ -88,30 +99,69 @@ class ArduPilot(IMUSequence):
         # Remove gravity if requested
         self.remove_gravity(remove_g)
 
+    def get_feature_config(self) -> Dict[str, List[str]]:
+        """
+        Get the feature configuration for ArduPilot dataset.
+        The features are derived from CSV columns:
+        TimeUS, AccX, AccY, AccZ, GyrX, GyrY, GyrZ, MagX, MagY, MagZ, Alt, Roll, Pitch, Yaw,
+        PN, VN, PE, VE, PD, VD, Lat, Lng, Status
+        
+        Returns:
+            Dict[str, List[str]]: Dictionary mapping feature groups to their column names
+        """
+        return {
+            "acc": ["AccX", "AccY", "AccZ"],
+            "gyro": ["GyrX", "GyrY", "GyrZ"],
+            "Mag": ["MagX", "MagY", "MagZ"],
+            "Alt": ["Alt"]
+        }
+
+    def _parse_config(self) -> None:
+        # Get feature configuration
+        features_config = self.conf.get("features", {})
+        if not features_config:
+            raise ValueError("No features defined in configuration")
+        
+        # Store feature structure from config
+        self.feature_groups = list(features_config.keys())  # Preserve config order
+        self.feature_dict = features_config  # Direct mapping from config
+        
+        # Create flat list of all feature column names
+        self.feature_names = []
+        for columns in features_config.values():
+            self.feature_names.extend(columns)
+        
     def load_imu(self, csv_path: str) -> None:
-        """Load IMU data from CSV file."""
+        """Load IMU data and additional features from CSV file based on config."""
+        self._parse_config()
         try:
             df = pd.read_csv(csv_path)
-            logger.info(f"Reading IMU data from {csv_path}")
+            logger.info(f"Reading data from {csv_path}")
             
             # Convert timestamps to seconds and to tensor
             self.data["time"] = torch.tensor(df["TimeUS"].values / 1e6, dtype=self.dtype)  # microseconds to seconds
             
-            # IMU data - acceleration in m/s^2, gyro in rad/s
-            self.data["gyro"] = torch.tensor(np.column_stack([
-                df["GyrX"].values,
-                df["GyrY"].values,
-                df["GyrZ"].values
-            ]), dtype=self.dtype)
+            # Load all features from config
+            for group_name, columns in self.feature_dict.items():
+                if not all(col in df.columns for col in columns):
+                    logger.warning(f"Missing columns for feature group {group_name}: {columns}")
+                    continue
+                    
+                logger.info(f"Loading {group_name} data: {columns}")
+                self.data[group_name] = torch.tensor(
+                    df[columns].values if len(columns) > 1 else df[columns[0]].values[:, None],
+                    dtype=self.dtype
+                )
             
-            self.data["acc"] = torch.tensor(np.column_stack([
-                df["AccX"].values,
-                df["AccY"].values,
-                df["AccZ"].values
-            ]), dtype=self.dtype)
+            # Validate required IMU features
+            if not all(f in self.data for f in ["acc", "gyro"]):
+                raise ValueError("Required IMU features (acc, gyro) not found in data")
+            
+            # Log loaded features
+            logger.info("Loaded feature groups: " + ", ".join(self.data.keys()))
             
         except Exception as e:
-            logger.error(f"Failed to load IMU data from {csv_path}: {str(e)}")
+            logger.error(f"Failed to load data from {csv_path}: {str(e)}")
             raise
 
     def load_gt(self, csv_path: str) -> None:
@@ -165,3 +215,56 @@ class ArduPilot(IMUSequence):
         except Exception as e:
             logger.error(f"Failed to load ground truth data from {csv_path}: {str(e)}")
             raise 
+
+    @property
+    def feature_dim(self) -> int:
+        """
+        Total number of input features based on loaded data.
+        
+        Returns:
+            int: Total number of input features
+        """
+        return len(self.feature_names)
+
+
+if __name__ == "__main__":
+    import argparse
+    from pyhocon import ConfigFactory
+    
+    # Example config
+    example_config = """
+    features {
+        acc = ["AccX", "AccY", "AccZ"]
+        gyro = ["GyrX", "GyrY", "GyrZ"]
+        Mag = ["MagX", "MagY", "MagZ"]
+        Alt = ["Alt"]
+    }
+    """
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="ArduPilot Dataset Example")
+    parser.add_argument("--data_path", type=str, default="data/sample.csv", help="Path to CSV data file")
+    args = parser.parse_args()
+    
+    # Create dataset instance
+    conf = ConfigFactory.parse_string(example_config)
+    dataset = ArduPilot(
+        data_root=".",
+        data_name=args.data_path,
+        conf=conf
+    )
+    
+    # Print dataset information
+    print("\nDataset Information:")
+    print(f"Feature groups: {dataset.feature_groups}")
+    print(f"Feature dictionary:")
+    for group, columns in dataset.feature_dict.items():
+        print(f"  {group}: {columns}")
+    print(f"All feature names: {dataset.feature_names}")
+    print(f"Total feature dimension: {dataset.feature_dim}")
+    
+    # Print data shapes
+    print("\nLoaded Data Shapes:")
+    for group in dataset.feature_groups:
+        if group in dataset.data:
+            print(f"  {group}: {dataset.data[group].shape}")

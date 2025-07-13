@@ -247,7 +247,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     logger.info(args)
+    
+    # Process config to merge with defaults
+    from model.code import process_config
     conf = ConfigFactory.parse_file(args.config)
+    conf = process_config(conf)
 
     conf.train.device = args.device
     exp_folder = os.path.split(conf.general.exp_dir)[-1]
@@ -306,9 +310,21 @@ if __name__ == "__main__":
         )
 
     ## optimizer and network
-    network = net_dict[conf.train.network](conf.train).to(
-        device=args.device, dtype=train_dataset.get_dtype()
-    )
+    network = net_dict[conf.model.network](
+        input_dim=conf.model.n_features,
+        feature_names=train_dataset.feature_names,
+        hidden_channels=conf.model.feature_channels,
+        kernel_sizes=conf.model.kernel_sizes if hasattr(conf.model, 'kernel_sizes') else [7, 7],
+        strides=conf.model.strides if hasattr(conf.model, 'strides') else [3, 3],
+        padding_num=conf.model.padding_num if hasattr(conf.model, 'padding_num') else 3,
+        propcov=conf.model.propcov if hasattr(conf.model, 'propcov') else True,
+    ).to(device=args.device, dtype=train_dataset.get_dtype())
+
+    # # Validate that datasets provide all features required by the model
+    # train_dataset.validate_features(feature_names)
+    # test_dataset.validate_features(feature_names)
+    # eval_dataset.validate_features(feature_names)
+
     optimizer = torch.optim.Adam(
         network.parameters(), lr=conf.train.lr, weight_decay=conf.train.weight_decay
     )  # to use with ViTs

@@ -1,74 +1,142 @@
-import numpy as np
-import pypose as pp
+"""
+Code for handling model configurations and feature extraction.
+"""
+from typing import Dict, List, Any, Optional, Sequence
+import logging
 import torch
 import torch.nn as nn
-from typing import List, Dict, Any, Optional
+from .config_defaults import merge_with_defaults
+
+logger = logging.getLogger(__name__)
+
+def process_config(config: Dict[str, Any], dataset: Optional[Any] = None) -> Dict[str, Any]:
+    """
+    Process configuration by merging with dataset-provided defaults.
+    
+    Args:
+        config: Raw configuration dictionary
+        dataset: Optional dataset instance to get feature configuration from
+        
+    Returns:
+        Processed configuration with defaults
+    """
+    # Get dataset name from train section
+    if "train" not in config or "data_list" not in config["train"]:
+        raise ValueError("Configuration must have train.data_list section")
+    
+    # If no model section exists, create it
+    if "model" not in config:
+        config["model"] = {}
+    
+    # If features not defined and dataset provided, use dataset's feature configuration
+    if "features" not in config["model"] and dataset is not None:
+        config["model"]["features"] = dataset.feature_dict
+        config["model"]["n_features"] = len(dataset.feature_dict) if dataset.feature_dict is not None else 6
+    
+    return config
 
 class CNNEncoder(nn.Module):
-    """
-    A 1D CNN encoder module.
-    """
-    def __init__(self, duration: int = 1, 
-                 k_list: List[int] = [7, 7, 7, 7], 
-                 c_list: List[int] = [6, 16, 32, 64, 128], 
-                 s_list: List[int] = [1, 1, 1, 1], 
-                 p_list: List[int] = [3, 3, 3, 3]):
-        """
-        Initializes the CNNEncoder.
-
-        Args:
-            duration (int, optional): The duration. Defaults to 1.
-            k_list (List[int], optional): The kernel sizes. Defaults to [7, 7, 7, 7].
-            c_list (List[int], optional): The channel sizes. Defaults to [6, 16, 32, 64, 128].
-            s_list (List[int], optional): The stride sizes. Defaults to [1, 1, 1, 1].
-            p_list (List[int], optional): The padding sizes. Defaults to [3, 3, 3, 3].
-        """
-        super(CNNEncoder, self).__init__()
-        self.duration = duration
-        self.k_list, self.c_list, self.s_list, self.p_list = k_list, c_list, s_list, p_list
+    """A 1D CNN encoder module."""
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: Sequence[int] = [16, 32, 64, 128],
+        kernel_sizes: Sequence[int] = [7, 7, 7, 7],
+        strides: Sequence[int] = [1, 1, 1, 1],
+        paddings: Sequence[int] = [3, 3, 3, 3]
+    ):
+        super().__init__()
+        
+        # Validate input parameters
+        if not hidden_channels:
+            raise ValueError("hidden_channels cannot be empty")
+            
+        n_layers = len(hidden_channels)
+        if len(kernel_sizes) != n_layers:
+            raise ValueError(f"Expected {n_layers} kernel sizes, got {len(kernel_sizes)}")
+        if len(strides) != n_layers:
+            raise ValueError(f"Expected {n_layers} stride values, got {len(strides)}")
+        if len(paddings) != n_layers:
+            raise ValueError(f"Expected {n_layers} padding values, got {len(paddings)}")
+            
+        channels = [in_channels] + list(hidden_channels)
         layers = []
 
-        for i in range(len(self.c_list) - 1):
-            layers.append(torch.nn.Conv1d(self.c_list[i], self.c_list[i+1], self.k_list[i], \
-                stride=self.s_list[i], padding=self.p_list[i]))
-            layers.append(torch.nn.BatchNorm1d(self.c_list[i+1]))
-            layers.append(torch.nn.GELU())
-        layers.append(torch.nn.Dropout(0.5))
+        for i in range(len(channels) - 1):
+            layers.append(
+                nn.Conv1d(
+                    channels[i],
+                    channels[i+1],
+                    kernel_sizes[i],
+                    stride=strides[i],
+                    padding=paddings[i]
+                )
+            )
+            layers.append(nn.BatchNorm1d(channels[i+1]))
+            layers.append(nn.GELU())
+        layers.append(nn.Dropout(0.5))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Performs the forward pass of the encoder.
-
-        Args:
-            x (torch.Tensor): The input tensor.
-
-        Returns:
-            torch.Tensor: The encoded tensor.
-        """
         return self.net(x)
 
-class CodeNetMotion(torch.nn.Module):
-    """
-    A network model for motion estimation.
-    """
-    def __init__(self, conf: Any):
-        """
-        Initializes the CodeNetMotion model.
-
-        Args:
-            conf (Any): The configuration object.
-        """
+class CodeNetMotion(nn.Module):
+    """Basic motion estimation network."""
+    def __init__(
+        self,
+        input_dim: int,
+        feature_names: Sequence[str],
+        hidden_channels: Sequence[int] = [32, 64],
+        propcov: bool = True,
+    ):
         super().__init__()
-        self.conf = conf    
+        self.feature_names = list(feature_names)
+        self.propcov = propcov
+        
+        # Keep these as instance variables for get_label method
         self.k_list = [7, 7]
         self.p_list = [3, 3]
         self.s_list = [3, 3]
-        self.cnn = CNNEncoder(c_list=[6, 32, 64], k_list=self.k_list, s_list=self.s_list, p_list=self.p_list)# (N,F/8,64)
-        self.gru1 = nn.GRU(input_size = 64, hidden_size =64, num_layers = 1, batch_first = True,bidirectional=True)
-        self.gru2 = nn.GRU(input_size = 128, hidden_size =128, num_layers = 1, batch_first = True,bidirectional=True)
-        self.veldecoder = nn.Sequential(nn.Linear(256, 128), nn.GELU(), nn.Linear(128, 3))
-        self.velcov_decoder = nn.Sequential(nn.Linear(256, 128), nn.GELU(), nn.Linear(128, 3))
+        
+        self.cnn = CNNEncoder(
+            in_channels=input_dim,
+            hidden_channels=hidden_channels,
+            kernel_sizes=self.k_list,
+            strides=self.s_list,
+            paddings=self.p_list
+        )
+        
+        last_cnn_channels = hidden_channels[-1]
+        self.gru1 = nn.GRU(
+            input_size=last_cnn_channels,
+            hidden_size=64,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+        self.gru2 = nn.GRU(
+            input_size=128,
+            hidden_size=128,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+        self.veldecoder = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, 3)
+        )
+        self.velcov_decoder = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, 3)
+        )
+
+    def _validate_input(self, data: Dict[str, torch.Tensor]) -> None:
+        """Validate that all required features are present in input data."""
+        missing = [f for f in self.feature_names if f not in data]
+        if missing:
+            raise ValueError(f"Missing required features: {missing}")
 
     def encoder(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -85,6 +153,19 @@ class CodeNetMotion(torch.nn.Module):
         x, _ = self.gru2(x)
         return x
 
+    def decoder(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the velocity from the input tensor.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The decoded velocity.
+        """
+        vel = self.veldecoder(x)
+        return vel
+
     def cov_decoder(self, x: torch.Tensor) -> torch.Tensor:
         """
         Decodes the covariance from the input tensor.
@@ -98,19 +179,6 @@ class CodeNetMotion(torch.nn.Module):
         cov = torch.exp(self.velcov_decoder(x) - 5.0)
         return cov
 
-    def decoder(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Decodes the velocity from the input tensor.
-
-        Args:
-            x (torch.Tensor): The input tensor.
-
-        Returns:
-            torch.Tensor: The decoded velocity.
-        """
-        vel = self.veldecoder(x)
-        return vel
-    
     def get_label(self, gt_label: torch.Tensor) -> torch.Tensor:
         """
         Gets the appropriate label for the output.
@@ -121,16 +189,15 @@ class CodeNetMotion(torch.nn.Module):
         Returns:
             torch.Tensor: The selected label.
         """
-        s_idx = (self.k_list[0] - self.p_list[0]) + self.s_list[0] * (self.k_list[1] - 1 -self.p_list[1]) + 1
-        select_label = gt_label[:, s_idx::self.s_list[0]* self.s_list[1],:]
-        L_out = (gt_label.shape[1] -1 - 1) // self.s_list[0] // self.s_list[1] + 1
+        s_idx = (self.k_list[0] - self.p_list[0]) + self.s_list[0] * (self.k_list[1] - 1 - self.p_list[1]) + 1
+        select_label = gt_label[:, s_idx::self.s_list[0] * self.s_list[1], :]
+        L_out = (gt_label.shape[1] - 1 - 1) // self.s_list[0] // self.s_list[1] + 1
         diff = L_out - select_label.shape[1]
         if diff > 0:
-            select_label = torch.cat((select_label,gt_label[:,-1:,:].repeat(1,diff , 1)),dim = 1)
+            select_label = torch.cat((select_label, gt_label[:,-1:,:].repeat(1, diff, 1)), dim=1)
         return select_label
-    
-    def forward(self, data: Dict[str, torch.Tensor], 
-                rot: Optional[torch.Tensor] = None) -> Dict[str, Optional[torch.Tensor]]:
+
+    def forward(self, data: Dict[str, torch.Tensor], rot: Optional[torch.Tensor] = None) -> Dict[str, Optional[torch.Tensor]]:
         """
         Performs the forward pass of the model.
 
@@ -141,48 +208,135 @@ class CodeNetMotion(torch.nn.Module):
         Returns:
             Dict[str, Optional[torch.Tensor]]: A dictionary containing the network output.
         """
-        feature = torch.cat([data["acc"], data["gyro"]], dim = -1)
+        self._validate_input(data)
+        
+        # Concatenate features in the order specified
+        features = [data[name] for name in self.feature_names]
+        feature = torch.cat(features, dim=-1)
+        
         feature = self.encoder(feature)
         net_vel = self.decoder(feature)
-   
+        
         cov = None
-        if self.conf.propcov:
+        if self.propcov:
             cov = self.cov_decoder(feature)
         return {"cov": cov, 'net_vel': net_vel}
 
     
-class CodeNetMotionwithRot(CodeNetMotion):
+class CodeNetMotionwithRot(nn.Module):
+    """Motion estimation network with rotation handling.
+    
+    This network processes both feature data and rotation data through separate encoders,
+    then combines them for motion estimation. It supports covariance propagation and
+    handles sequence length adjustments due to convolutions.
     """
-    A network model for motion estimation that also considers rotation.
-    """
-    def __init__(self, conf: Any):
-        """
-        Initializes the CodeNetMotionwithRot model.
-
+    def __init__(
+        self,
+        input_dim: int,
+        input_dim_ori: int = 3,
+        feature_names: Sequence[str] = None,
+        hidden_channels: Sequence[int] = [32, 64],
+        kernel_sizes: Sequence[int] = [7, 7],
+        strides: Sequence[int] = [3, 3],
+        padding_num: int = 3,
+        propcov: bool = True
+    ):
+        """Initialize the CodeNetMotionwithRot model.
+        
         Args:
-            conf (Any): The configuration object.
+            input_dim (int): Number of input feature dimensions
+            input_dim_ori (int, optional): Number of orientation input dimensions.
+                Defaults to 3.
+            feature_names (Sequence[str], optional): Names of input features.
+                Defaults to None.
+            hidden_channels (Sequence[int], optional): Number of channels in each conv layer. 
+                Defaults to [32, 64].
+            kernel_sizes (Sequence[int], optional): Kernel sizes for conv layers. 
+                Defaults to [7, 7].
+            strides (Sequence[int], optional): Stride values for conv layers. 
+                Defaults to [3, 3].
+            padding_num (int, optional): Padding size for conv layers. 
+                Defaults to 3.
+            propcov (bool, optional): Whether to propagate covariance. 
+                Defaults to True.
         """
-        super().__init__(conf)
-        self.conf = conf    
-        self.interval = 9
-        self.k_list = [7, 7]
-        self.padding_num = 3
-        self.s_list = [3, 3]
+        super().__init__()
         
-        self.feature_encoder = CNNEncoder(c_list=[6, 32, 64], k_list=self.k_list, s_list=self.s_list, p_list=[3,3])# (N,F/8,64)
-        self.ori_encoder = CNNEncoder(c_list=[3, 32, 64], k_list=self.k_list, s_list=self.s_list, p_list=[3,3])# (N,F/8,64)
-        self.gru1 = nn.GRU(input_size = 64, hidden_size =64, num_layers = 1, batch_first = True,bidirectional=True)
-        self.gru2 = nn.GRU(input_size = 128, hidden_size =128, num_layers = 1, batch_first = True,bidirectional=True)
+        # Validate parameters
+        if not hidden_channels:
+            raise ValueError("hidden_channels cannot be empty")
+        if len(kernel_sizes) != len(hidden_channels):
+            raise ValueError(f"Expected {len(hidden_channels)} kernel sizes, got {len(kernel_sizes)}")
+        if len(strides) != len(hidden_channels):
+            raise ValueError(f"Expected {len(hidden_channels)} stride values, got {len(strides)}")
+            
+        self.feature_names = list(feature_names) if feature_names is not None else []
+        self.propcov = propcov
+        
+        # Network architecture parameters
+        self.interval = 9  # Used for sequence processing
+        self.padding_num = padding_num
+        self.k_list = kernel_sizes
+        self.s_list = strides
+        self.p_list = [padding_num] * len(kernel_sizes)
+        
+        # Separate encoders for features and rotation
+        self.feature_encoder = CNNEncoder(
+            in_channels=input_dim,
+            hidden_channels=hidden_channels,
+            kernel_sizes=self.k_list,
+            strides=self.s_list,
+            paddings=self.p_list
+        )
+        self.ori_encoder = CNNEncoder(
+            in_channels=input_dim_ori,
+            hidden_channels=hidden_channels,
+            kernel_sizes=self.k_list,
+            strides=self.s_list,
+            paddings=self.p_list
+        )
+        
+        # GRU layers for sequence processing
+        self.gru1 = nn.GRU(
+            input_size=64,
+            hidden_size=64,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+        self.gru2 = nn.GRU(
+            input_size=128,
+            hidden_size=128,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+        
+        # Additional processing layers
         self.fcn1 = nn.Sequential(nn.Linear(128, 128))
-        self.batchnorm1 = torch.nn.BatchNorm1d(128)
+        self.batchnorm1 = nn.BatchNorm1d(128)
         self.fcn2 = nn.Sequential(nn.Linear(128, 64))
-        self.batchnorm2 = torch.nn.BatchNorm1d(64)
-        
+        self.batchnorm2 = nn.BatchNorm1d(64)
         self.gelu = nn.GELU()
-
         
-        self.veldecoder = nn.Sequential(nn.Linear(256, 128),nn.GELU(), nn.Linear(128, 3))
-        self.velcov_decoder = nn.Sequential(nn.Linear(256, 128),nn.GELU(), nn.Linear(128, 3))
+        # Decoder networks
+        self.veldecoder = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, 3)
+        )
+        self.velcov_decoder = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, 3)
+        )
+
+    def _validate_input(self, data: Dict[str, torch.Tensor]) -> None:
+        """Validate that all required features are present in input data."""
+        if self.feature_names:  # Only validate if feature names were provided
+            missing = [f for f in self.feature_names if f not in data]
+            if missing:
+                raise ValueError(f"Missing required features: {missing}")
 
     def encoder(self, feature: torch.Tensor, ori: torch.Tensor) -> torch.Tensor:
         """
@@ -196,18 +350,61 @@ class CodeNetMotionwithRot(CodeNetMotion):
             torch.Tensor: The encoded tensor.
         """
         x1 = self.feature_encoder(feature.transpose(-1, -2)).transpose(-1, -2)
-        x2 = self.ori_encoder(ori.transpose(-1,-2)).transpose(-1, -2) 
-        x = torch.cat([x1, x2], dim = -1)
+        x2 = self.ori_encoder(ori.transpose(-1, -2)).transpose(-1, -2)
+        x = torch.cat([x1, x2], dim=-1)
         
         x = self.fcn2(x)
-        x = self.batchnorm2(x.transpose(-1,-2)).transpose(-1,-2)
+        x = self.batchnorm2(x.transpose(-1, -2)).transpose(-1, -2)
         x = self.gelu(x)
         x, _ = self.gru1(x)
         x, _ = self.gru2(x)
         return x
-    
-    def forward(self, data: Dict[str, torch.Tensor], 
-                rot: Optional[torch.Tensor] = None) -> Dict[str, Optional[torch.Tensor]]:
+
+    def decoder(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the velocity from the input tensor.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The decoded velocity.
+        """
+        vel = self.veldecoder(x)
+        return vel
+
+    def cov_decoder(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the covariance from the input tensor.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The decoded covariance.
+        """
+        cov = torch.exp(self.velcov_decoder(x) - 5.0)
+        return cov
+
+    def get_label(self, gt_label: torch.Tensor) -> torch.Tensor:
+        """
+        Gets the appropriate label for the output.
+
+        Args:
+            gt_label (torch.Tensor): The ground truth label.
+
+        Returns:
+            torch.Tensor: The selected label.
+        """
+        s_idx = (self.k_list[0] - self.p_list[0]) + self.s_list[0] * (self.k_list[1] - 1 - self.p_list[1]) + 1
+        select_label = gt_label[:, s_idx::self.s_list[0] * self.s_list[1], :]
+        L_out = (gt_label.shape[1] - 1 - 1) // self.s_list[0] // self.s_list[1] + 1
+        diff = L_out - select_label.shape[1]
+        if diff > 0:
+            select_label = torch.cat((select_label, gt_label[:,-1:,:].repeat(1, diff, 1)), dim=1)
+        return select_label
+
+    def forward(self, data: Dict[str, torch.Tensor], rot: Optional[torch.Tensor] = None) -> Dict[str, Optional[torch.Tensor]]:
         """
         Performs the forward pass of the model.
 
@@ -218,13 +415,23 @@ class CodeNetMotionwithRot(CodeNetMotion):
         Returns:
             Dict[str, Optional[torch.Tensor]]: A dictionary containing the network output.
         """
-        assert rot is not None
-        feature = torch.cat([data["acc"], data["gyro"]], dim = -1)
+        self._validate_input(data)
+        if rot is None:
+            raise ValueError("Rotation tensor is required for this model")
+        
+        # Concatenate features in the order specified
+        if self.feature_names:
+            features = [data[name] for name in self.feature_names]
+            feature = torch.cat(features, dim=-1)
+        else:
+            # If no feature names specified, assume data is already concatenated
+            feature = next(iter(data.values()))
+        
         feature = self.encoder(feature, rot)
         net_vel = self.decoder(feature)
-   
-        #covariance propagation
+        
         cov = None
-        if self.conf.propcov:
+        if self.propcov:
             cov = self.cov_decoder(feature)
-        return {"cov": cov, 'net_vel': net_vel}
+        
+        return {"cov": cov, "net_vel": net_vel}

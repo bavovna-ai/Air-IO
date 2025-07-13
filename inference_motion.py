@@ -14,6 +14,7 @@ from pyhocon import ConfigFactory
 from datasets import collate_fcs, SeqeuncesMotionDataset
 from model import net_dict
 from utils import *
+from model.code import get_feature_names_from_config, get_feature_dim_from_config
 
 
 def inference(network: torch.nn.Module, 
@@ -58,7 +59,12 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args(); print(args)
+    
+    # Process config to merge with defaults
+    from model.code import process_config
     conf = ConfigFactory.parse_file(args.config)
+    conf = process_config(conf)
+    
     conf.train.device = args.device
     conf_name = os.path.split(args.config)[-1].split(".")[0]
     conf['general']['exp_dir'] = os.path.join(conf.general.exp_dir, conf_name)
@@ -66,7 +72,20 @@ if __name__ == '__main__':
     dataset_conf = conf.dataset.inference
     
     
-    network = net_dict[conf.train.network](conf.train).to(args.device).double()
+    # Get feature information from model config
+    feature_names = get_feature_names_from_config(conf.model)
+    network = net_dict[conf.model.network](
+        input_dim=conf.model.n_features,
+        feature_names=dataset_conf.feature_names,
+        hidden_channels=conf.model.feature_channels,
+        kernel_sizes=conf.model.kernel_sizes if hasattr(conf.model, 'kernel_sizes') else [7, 7],
+        strides=conf.model.strides if hasattr(conf.model, 'strides') else [3, 3],
+        padding_num=conf.model.padding_num if hasattr(conf.model, 'padding_num') else 3,
+        propcov=conf.model.propcov if hasattr(conf.model, 'propcov') else True,
+    ).to(args.device).double()
+
+    # Validate that dataset provides all features required by the model
+    dataset_conf.validate_features(dataset_conf.feature_names)
     save_folder = os.path.join(conf.general.exp_dir, "evaluate")
     os.makedirs(save_folder, exist_ok=True)
 

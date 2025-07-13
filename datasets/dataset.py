@@ -186,6 +186,12 @@ class IMUSequence(Sequence):
     """
     An intermediate class for IMU sequence data with common functionality.
     """
+    # Default feature dictionary for basic IMU features
+    feature_dict = {
+        "acc": ["acc_x", "acc_y", "acc_z"],
+        "gyro": ["gyro_x", "gyro_y", "gyro_z"]
+    }
+
     def __init__(
         self,
         data_root: str,
@@ -203,6 +209,34 @@ class IMUSequence(Sequence):
         self.data_name = data_name
         self.dtype = torch.double
         self.g_vector = torch.tensor([0, 0, gravity], dtype=self.dtype)
+
+    @property
+    def feature_names(self) -> List[str]:
+        """Get flattened list of feature names."""
+        return [name for cols in self.feature_dict.values() for name in cols]
+    
+    @property
+    def n_features(self) -> int:
+        """Calculate total feature dimension from feature dictionary."""
+        return sum(len(cols) for cols in self.feature_dict.values())
+    
+    def validate_features(self, required_features: List[str]) -> None:
+        """
+        Validate that all required features are available in the dataset.
+        
+        Args:
+            required_features: List of feature names that are required
+            
+        Raises:
+            ValueError: If any required features are missing
+        """
+        available_features = []
+        for feature_group in self.feature_dict.values():
+            available_features.extend(feature_group)
+            
+        missing = [f for f in required_features if f not in available_features]
+        if missing:
+            raise ValueError(f"Dataset {self.__class__.__name__} missing required features: {missing}")
 
     def __len__(self) -> int:
         """Returns the length of the sequence."""

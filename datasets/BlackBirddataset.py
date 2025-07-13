@@ -3,7 +3,7 @@ Reference: https://github.com/uzh-rpg/learned_inertial_model_odometry/blob/maste
 """
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import copy
 
 import numpy as np
@@ -17,6 +17,17 @@ from .dataset import IMUSequence
 logger = logging.getLogger(__name__)
 
 class BlackBird(IMUSequence):
+    """
+    BlackBird dataset reader.
+    The features are derived from imu_data.csv which contains:
+    - Columns 1:4: Gyroscope measurements
+    - Columns 4:7: Accelerometer measurements
+    """
+    feature_dict = {
+        "gyro": ["GyrX", "GyrY", "GyrZ"],  # Columns 1:4 from imu_data.csv
+        "acc": ["AccX", "AccY", "AccZ"],    # Columns 4:7 from imu_data.csv
+    }
+
     def __init__(
         self,
         data_root: str,
