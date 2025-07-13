@@ -69,20 +69,37 @@ def get_motion_RMSE(inte_state: Dict[str, torch.Tensor],
         confs (Any): The configuration object.
 
     Returns:
-        Dict[str, torch.Tensor]: A dictionary containing the RMSE loss, distance, and covariance loss.
+        Dict[str, torch.Tensor]: A dictionary containing the RMSE loss, distance, covariance loss,
+                                and Pearson correlation coefficients for each velocity component.
     """
     def _RMSE(x: torch.Tensor) -> torch.Tensor:
         return torch.sqrt((x.norm(dim=-1)**2).mean())
+        
+    def _pearson_r(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Calculate Pearson R for each velocity component."""
+        # x, y shape: [batch, time, 3]
+        vx = x - x.mean(dim=1, keepdim=True)
+        vy = y - y.mean(dim=1, keepdim=True)
+        r = (vx * vy).sum(dim=1) / (torch.sqrt((vx ** 2).sum(dim=1) * (vy ** 2).sum(dim=1)) + 1e-8)
+        return r.mean(dim=0)  # Average across batch, return [3] for x,y,z components
+        
     cov_loss = torch.tensor(0.0, device=label.device)
-    dist = (inte_state['net_vel'] - label)
-    dist = torch.mean(dist,dim=-2)
+    pred_vel = inte_state['net_vel']
+    dist = (pred_vel - label)
+    dist = torch.mean(dist, dim=-2)
     loss = _RMSE(dist)[None,...]
+    
+    # Calculate Pearson R for velocities
+    pearson_r = _pearson_r(pred_vel, label)  # [3] tensor for x,y,z components
     
     if confs.propcov:
         #velocity covariance.
         cov = inte_state['cov']
         cov_loss = cov.mean()
     
-    return {'loss': loss, 
-            'dist': dist.norm(dim=-1).mean(),
-            'cov_loss': cov_loss}
+    return {
+        'loss': loss, 
+        'dist': dist.norm(dim=-1).mean(),
+        'cov_loss': cov_loss,
+        'pearson_r': pearson_r  # [x,y,z] correlations
+    }

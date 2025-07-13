@@ -7,6 +7,7 @@ import json
 import argparse
 import numpy as np
 import pypose as pp
+import logging
 
 import torch
 import torch.utils.data as Data
@@ -19,6 +20,16 @@ from utils import CPU_Unpickler, integrate, interp_xyz
 from utils.velocity_integrator import Velocity_Integrator, integrate_pos
 
 from utils.visualize_state import visualize_motion
+
+# Set up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Add console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
  
 def calculate_rte(outstate: Dict[str, torch.Tensor], 
                   duration: int, 
@@ -51,12 +62,11 @@ if __name__ == '__main__':
     parser.add_argument("--savedir",type=str,default = "./result/loss_result",help = "Directory where the results wiil be saved")
     parser.add_argument("--usegtrot", action="store_true", help="Use ground truth rotation for gravity compensation")
 
-    args = parser.parse_args(); 
-    print(("\n"*3) + str(args) + ("\n"*3))
+    args = parser.parse_args()
+    logger.info(("\n"*3) + str(args) + ("\n"*3))
     config = ConfigFactory.parse_file(args.dataconf)
     dataset_conf = config.inference
-    print(dataset_conf.keys())
-
+    logger.info(dataset_conf.keys())
 
     if args.exp is not None:
         net_result_path = os.path.join(args.exp, 'net_output.pickle')
@@ -73,12 +83,12 @@ if __name__ == '__main__':
     net_out_result = {}
 
     for data_conf in dataset_conf.data_list:
-        print(data_conf)
+        logger.info(data_conf)
         for data_name in data_conf.data_drive:
-            print(data_conf.data_root, data_name)
-            print("data_conf.dataroot", data_conf.data_root)
-            print("data_name", data_name)
-            print("data_conf.name", data_conf.name)
+            logger.info(f"Data root: {data_conf.data_root}, Data name: {data_name}")
+            logger.info(f"data_conf.dataroot: {data_conf.data_root}")
+            logger.info(f"data_name: {data_name}")
+            logger.info(f"data_conf.name: {data_conf.name}")
 
             dataset = SeqDataset(data_conf.data_root, data_name, args.device, name = data_conf.name, duration=args.seqlen, step_size=args.seqlen, drop_last=False, conf = dataset_conf)
             loader = Data.DataLoader(dataset=dataset, batch_size=1, collate_fn=imu_seq_collate, shuffle=False, drop_last=False)
@@ -115,7 +125,7 @@ if __name__ == '__main__':
                 indices = torch.cat([torch.where(gt_ts == item)[0] for item in vel_ts[:,0]]).to(torch.int32)
 
                 if "coordinate" in dataset_conf.keys():
-                    print("*************",dataset_conf["coordinate"],"*************")
+                    logger.info(f"************* {dataset_conf['coordinate']} *************")
                     if dataset_conf["coordinate"] == "body_coord":
                         rotation = motion_dataset.data['gt_orientation'] # Set data['gt_orientation'] using AirIMU or gt-truth in the dataconf
 
@@ -154,15 +164,15 @@ if __name__ == '__main__':
                 
                 AllResults.append(result_dic)
                 
-                print("==============Integration==============")
-                print("outstate:")
-                print("pos_err: ", outstate['pos_dist'].mean())
-                print("rte",relative_outstate['vel_dist'].mean())
+                logger.info("==============Integration==============")
+                logger.info("outstate:")
+                logger.info(f"pos_err: {outstate['pos_dist'].mean()}")
+                logger.info(f"rte: {relative_outstate['vel_dist'].mean()}")
                 
-                print("==============AirIO==============")
-                print("infstate:")
-                print("pos_err: ", inf_outstate['pos_dist'].mean())
-                print("rte",inf_rte.mean())
+                logger.info("==============AirIO==============")
+                logger.info("infstate:")
+                logger.info(f"pos_err: {inf_outstate['pos_dist'].mean()}")
+                logger.info(f"rte: {inf_rte.mean()}")
 
             visualize_motion(save_prefix, folder,outstate,inf_outstate)
 

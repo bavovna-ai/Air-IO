@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 from typing import Any, Dict, Tuple
 import tqdm, wandb
@@ -21,6 +22,16 @@ from model.losses import get_motion_loss, get_motion_RMSE
 from utils import (cat_state, move_to, save_ckpt, save_state,
                    write_wandb)
 import copy
+
+# Set up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Add console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 def train(network: torch.nn.Module, 
           loader: Data.DataLoader, 
@@ -77,15 +88,17 @@ def test(network: torch.nn.Module,
 
     Args:
         network (torch.nn.Module): The neural network model to test.
-        loader (Data.DataLoader): The data loader for testing data.
+        loader (Data.DataLoader): The data loader for test data.
         confs (Dict[str, Any]): A dictionary of configurations.
 
     Returns:
-        Dict[str, float]: A dictionary containing the average loss and covariance.
+        Dict[str, float]: A dictionary containing test results.
     """
     network.eval() 
     with torch.no_grad():
         losses, pred_cov = 0.0, 0.0
+        pearson_r_sum = torch.zeros(3, device=confs.device)  # [x,y,z] components
+        n_batches = 0
 
         t_range = tqdm.tqdm(loader)
         for i, (data, _, label) in enumerate(t_range):
@@ -96,23 +109,36 @@ def test(network: torch.nn.Module,
             loss_state = get_motion_RMSE(inte_state, gt_label,confs)
             # statistics
             losses += loss_state["loss"].item()
+            pearson_r_sum += loss_state["pearson_r"]
+            n_batches = i + 1
 
             if confs.propcov:
                 pred_cov += loss_state["cov_loss"].mean().item()
                 cov_loss_value = torch.sqrt(loss_state['cov_loss'])
             else:   
                 cov_loss_value = 0
+                
+            # Calculate average Pearson R
+            pearson_r_avg = pearson_r_sum / n_batches
+            
             t_range.set_description(
-                "testing loss: %.06f, cov: %.06f, error: %.06f" % (
-                    losses / (i + 1), 
+                "testing loss: %.06f, cov: %.06f, error: %.06f, R[xyz]: %.03f,%.03f,%.03f" % (
+                    losses / n_batches, 
                     cov_loss_value, 
-                    loss_state['dist']
+                    loss_state['dist'],
+                    pearson_r_avg[0],
+                    pearson_r_avg[1],
+                    pearson_r_avg[2]
                 )
             )
 
             t_range.refresh()
             
-    return {"loss": (losses / (i + 1)), "cov": (pred_cov / (i + 1))}
+    return {
+        "loss": (losses / n_batches), 
+        "cov": (pred_cov / n_batches),
+        "pearson_r": pearson_r_sum / n_batches
+    }
 
 
 def evaluate(network: torch.nn.Module, 
@@ -136,6 +162,8 @@ def evaluate(network: torch.nn.Module,
     evaluate_states, loss_states, labels = {}, {}, {}
     pred_cov = []
     skip_key = None
+    pearson_r_sum = torch.zeros(3, device=confs.device)  # [x,y,z] components
+    n_batches = 0
 
     with torch.no_grad():
         inte_state = None
@@ -150,6 +178,8 @@ def evaluate(network: torch.nn.Module,
             save_state(loss_states, loss_state)
             save_state(evaluate_states, inte_state)
             save_state(labels, label)
+            pearson_r_sum += loss_state["pearson_r"]
+            n_batches = i + 1
 
             if "cov" in inte_state and inte_state["cov"] is not None:
                 pred_cov.append(inte_state["cov"])
@@ -163,7 +193,6 @@ def evaluate(network: torch.nn.Module,
             cov = torch.tensor(0.0, device=confs.device)
             skip_key = "cov_loss"
 
-
         for k, v in loss_states.items():
             if skip_key and k == skip_key:
                 continue
@@ -171,15 +200,23 @@ def evaluate(network: torch.nn.Module,
 
         cat_state(evaluate_states)
         cat_state(labels)
+        
+        pearson_r_avg = pearson_r_sum / n_batches
 
-        print("evaluating: vel losses %f, evaluation cov %f" % (loss_states['loss'].mean(), cov.mean()))
-
+        logger.info("evaluating: vel losses %.06f, evaluation cov %.06f, R[xyz]: %.03f,%.03f,%.03f" % (
+            loss_states['loss'].mean(), 
+            cov.mean(),
+            pearson_r_avg[0],
+            pearson_r_avg[1],
+            pearson_r_avg[2]
+        ))
 
     return {
         "evaluate": evaluate_states,
         "evaluate_cov": cov,
         "loss": loss_states,
         "labels": labels,
+        "pearson_r": pearson_r_avg
     }
 
 
@@ -209,7 +246,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    print(args)
+    logger.info(args)
     conf = ConfigFactory.parse_file(args.config)
 
     conf.train.device = args.device
@@ -259,7 +296,7 @@ if __name__ == "__main__":
 
     if not args.log:
         wandb.disabled = True
-        print("wandb is disabled")
+        logger.info("wandb is disabled")
     else:
         wandb.init(
             project="AirIO" + exp_folder,
@@ -298,32 +335,41 @@ if __name__ == "__main__":
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             epoch = checkpoint["epoch"]
             best_loss = checkpoint["best_loss"]
-            print(
+            logger.info(
                 "loaded state dict %s best_loss %f"
                 % (os.path.join(conf.general.exp_dir, "ckpt/newest.ckpt"), best_loss)
             )
         else:
-            print("Can't find the checkpoint")
+            logger.info("Can't find the checkpoint")
 
     for epoch_i in range(epoch, conf.train.max_epoches):
         train_loss = train(network, train_loader, conf.train, epoch_i, optimizer)
         test_loss = test(network, test_loader, conf.train)
-        print("train loss: %f test loss: %f" % (train_loss["loss"], test_loss["loss"]))
+        logger.info("train loss: %f test loss: %f" % (train_loss["loss"], test_loss["loss"]))
 
         # save the training meta information
         if args.log:
             write_wandb("train", train_loss, epoch_i)
             write_wandb("test", test_loss, epoch_i)
+            # Log Pearson R for test
+            write_wandb("test/pearson_r_x", test_loss["pearson_r"][0], epoch_i)
+            write_wandb("test/pearson_r_y", test_loss["pearson_r"][1], epoch_i)
+            write_wandb("test/pearson_r_z", test_loss["pearson_r"][2], epoch_i)
             write_wandb("lr", scheduler.optimizer.param_groups[0]["lr"], epoch_i)
+
         if epoch_i % conf.train.eval_freq == conf.train.eval_freq - 1:
             eval_state = evaluate(network=network, loader=eval_loader, confs=conf.train)
             if args.log:
                 write_wandb('eval/loss', eval_state['loss']['loss'].mean(), epoch_i)
                 write_wandb('eval/dist', eval_state['loss']['dist'].mean(), epoch_i)
+                # Log Pearson R for eval
+                write_wandb('eval/pearson_r_x', eval_state['pearson_r'][0], epoch_i)
+                write_wandb('eval/pearson_r_y', eval_state['pearson_r'][1], epoch_i)
+                write_wandb('eval/pearson_r_z', eval_state['pearson_r'][2], epoch_i)
             if "supervise_pos" in conf.train:
-                print("eval pos: %f "%(eval_state['loss']['loss'].mean()))
+                logger.info("eval pos: %f "%(eval_state['loss']['loss'].mean()))
             else:
-                print("eval vel: %f "%(eval_state['loss']['loss'].mean()))
+                logger.info("eval vel: %f "%(eval_state['loss']['loss'].mean()))
 
         scheduler.step(test_loss["loss"])
         if test_loss["loss"] < best_loss:
