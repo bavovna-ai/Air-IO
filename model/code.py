@@ -5,7 +5,6 @@ from typing import Dict, List, Any, Optional, Sequence
 import logging
 import torch
 import torch.nn as nn
-from .config_defaults import merge_with_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +20,8 @@ def process_config(config: Dict[str, Any], dataset: Optional[Any] = None) -> Dic
         Processed configuration with defaults
     """
     # Get dataset name from train section
-    if "train" not in config or "data_list" not in config["train"]:
-        raise ValueError("Configuration must have train.data_list section")
+    if "train" not in config:
+        raise ValueError("Configuration must have train section")
     
     # If no model section exists, create it
     if "model" not in config:

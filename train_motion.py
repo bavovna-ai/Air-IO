@@ -310,14 +310,18 @@ if __name__ == "__main__":
         )
 
     ## optimizer and network
-    network = net_dict[conf.model.network](
-        input_dim=conf.model.n_features,
+    network_name = conf.model.get('network', conf.train.get('network'))
+
+    if network_name is None:
+        raise KeyError('network_name not found in the config')
+    network = net_dict[network_name](
+        input_dim=conf.model['n_features'],
         feature_names=train_dataset.feature_names,
-        hidden_channels=conf.model.feature_channels,
-        kernel_sizes=conf.model.kernel_sizes if hasattr(conf.model, 'kernel_sizes') else [7, 7],
-        strides=conf.model.strides if hasattr(conf.model, 'strides') else [3, 3],
-        padding_num=conf.model.padding_num if hasattr(conf.model, 'padding_num') else 3,
-        propcov=conf.model.propcov if hasattr(conf.model, 'propcov') else True,
+        hidden_channels=conf.model.get('feature_channels', [32, 64]),
+        kernel_sizes=conf.model.get( 'kernel_sizes', [7, 7]),
+        strides=conf.model.get('strides', [3, 3]),
+        padding_num=conf.model.get('padding_num', 3),
+        propcov=conf.model.get('propcov', True),
     ).to(device=args.device, dtype=train_dataset.get_dtype())
 
     # # Validate that datasets provide all features required by the model
