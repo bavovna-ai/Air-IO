@@ -364,7 +364,7 @@ if __name__ == "__main__":
         logger.info("train loss: %f test loss: %f" % (train_loss["loss"], test_loss["loss"]))
 
         # save the training meta information
-        if args.log:
+        if not args.no_wandb:
             write_wandb("train", train_loss, epoch_i)
             write_wandb("test", test_loss, epoch_i)
             # Log Pearson R for test
@@ -375,7 +375,7 @@ if __name__ == "__main__":
 
         if epoch_i % conf.train.eval_freq == conf.train.eval_freq - 1:
             eval_state = evaluate(network=network, loader=eval_loader, confs=conf.train)
-            if args.log:
+            if not args.no_wandb:
                 write_wandb('eval/loss', eval_state['loss']['loss'].mean(), epoch_i)
                 write_wandb('eval/dist', eval_state['loss']['dist'].mean(), epoch_i)
                 # Log Pearson R for eval

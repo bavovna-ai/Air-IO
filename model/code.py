@@ -52,7 +52,9 @@ def process_config(config: Dict[str, Any], dataset: Optional[Any] = None) -> Dic
         config["model"]["features"] = dataset.feature_dict
         config["model"]["n_features"] = len(dataset.feature_dict) if dataset.feature_dict is not None else 6
         config["model"]["feature_names"] = dataset.feature_names if hasattr(dataset, "feature_names") else None
-    
+    else:
+        config["model"]["n_features"] = 6
+        
     return config
 
 class CNNEncoder(nn.Module):
