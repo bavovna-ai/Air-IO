@@ -27,10 +27,31 @@ def process_config(config: Dict[str, Any], dataset: Optional[Any] = None) -> Dic
     if "model" not in config:
         config["model"] = {}
     
+    # Get network name from either model or train section
+    network_name = config["model"].get("network", config["train"].get("network"))
+    if network_name is None:
+        raise KeyError("network_name not found in config")
+    config["model"]["network"] = network_name
+
+    # Set model defaults
+    model_defaults = {
+        "feature_channels": [32, 64],
+        "kernel_sizes": [7, 7],
+        "strides": [3, 3],
+        "padding_num": 3,
+        "propcov": True,
+    }
+    
+    # Update model config with defaults for missing values
+    for key, default_value in model_defaults.items():
+        if key not in config["model"]:
+            config["model"][key] = default_value
+    
     # If features not defined and dataset provided, use dataset's feature configuration
     if "features" not in config["model"] and dataset is not None:
         config["model"]["features"] = dataset.feature_dict
         config["model"]["n_features"] = len(dataset.feature_dict) if dataset.feature_dict is not None else 6
+        config["model"]["feature_names"] = dataset.feature_names if hasattr(dataset, "feature_names") else None
     
     return config
 

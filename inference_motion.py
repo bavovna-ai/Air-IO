@@ -74,14 +74,14 @@ if __name__ == '__main__':
     
     # Get feature information from model config
     feature_names = get_feature_names_from_config(conf.model)
-    network = net_dict[conf.model.network](
-        input_dim=conf.model.n_features,
-        feature_names=dataset_conf.feature_names,
-        hidden_channels=conf.model.feature_channels,
-        kernel_sizes=conf.model.kernel_sizes if hasattr(conf.model, 'kernel_sizes') else [7, 7],
-        strides=conf.model.strides if hasattr(conf.model, 'strides') else [3, 3],
-        padding_num=conf.model.padding_num if hasattr(conf.model, 'padding_num') else 3,
-        propcov=conf.model.propcov if hasattr(conf.model, 'propcov') else True,
+    network = net_dict[conf.model["network"]](
+        input_dim=conf.model["n_features"],
+        feature_names=conf.model["feature_names"],
+        hidden_channels=conf.model["feature_channels"],
+        kernel_sizes=conf.model["kernel_sizes"],
+        strides=conf.model["strides"],
+        padding_num=conf.model["padding_num"],
+        propcov=conf.model["propcov"],
     ).to(args.device).double()
 
     # Validate that dataset provides all features required by the model
