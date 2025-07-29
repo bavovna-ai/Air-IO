@@ -23,7 +23,8 @@ from utils import (cat_state, move_to, save_ckpt, save_state,
                    write_wandb)
 import copy
 
-# Set up logger
+# Set up logger 
+#test
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
