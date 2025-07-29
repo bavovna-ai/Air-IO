@@ -3,6 +3,7 @@ import numpy as np
 import pypose as pp
 import torch
 import sys
+import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.utils import lookAt, qinterp, Gaussian_noise
 from .dataset import Sequence
@@ -26,17 +27,17 @@ class Bavovna(Sequence):
     ):
         super(Bavovna, self).__init__()
         (
-            self.data_root,
+            self.data_root, 
             self.data_name,
-            self.data,
-            self.ts,
-            self.targets,
-            self.orientations,
-            self.gt_pos,
-            self.gt_ori,
+            self.data, # dictionary to store the data
+            self.ts, # time stamp
+            self.targets, # targets
+            self.orientations, # orientations
+            self.gt_pos, # ground truth position
+            self.gt_ori, # ground truth orientation
         ) = (data_root, data_name, dict(), None, None, None, None, None)
         self.g_vector = torch.tensor([0, 0, gravity], dtype=torch.double)
-        self.load_data(data_root) # For Bavovna dataset, the CSV file is directly in the data_root directory
+        self.load_data(data_root, data_name) # For Bavovna dataset, the CSV file is directly in the data_root directory
         self.convert_to_torch() # Convert to torch tensors
         self.set_orientation(rot_path, data_name, rot_type) # For Bavovna dataset, we can leave it empty as we're using ground truth orientation
         self.update_coordinate(coordinate, mode) # For Bavovna dataset, we can leave it empty as we're using ground truth orientation
@@ -45,9 +46,9 @@ class Bavovna(Sequence):
     def get_length(self): # Get the length of the dataset
         return self.data["time"].shape[0]
     
-    def load_data(self, folder):        
+    def load_data(self, folder, file_name):        
         # Load the CSV file
-        csv_file = os.path.join(folder, "1af74d402fd2e281-20000us.csv")  # Assuming your file is named data.csv
+        csv_file = os.path.join(folder, file_name)  # Assuming your file is named data.csv
         if not os.path.exists(csv_file):
             # Try alternative names
             for filename in ["imu_data.csv", "flight_data.csv", "bavovna_data.csv"]:
@@ -56,7 +57,6 @@ class Bavovna(Sequence):
                     break
         
         # Load data with pandas for better column handling
-        import pandas as pd
         df = pd.read_csv(csv_file)
         
         # Extract IMU data
@@ -188,7 +188,7 @@ class Bavovna(Sequence):
 
 if __name__ == "__main__":
     dataset = Bavovna(
-        data_root = "/home/duarte33/Air-IO-og/data/Aurelia",
+        data_root = "/home/duarte33/AirIO-Bavovna/data/Aurelia",
         data_name = "1af74d402fd2e281-20000us.csv",
         mode="train",
         rot_path=None,
