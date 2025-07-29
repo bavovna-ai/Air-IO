@@ -1,7 +1,6 @@
 import os
 import sys
 import torch
-from typing import Any, Dict
 
 import torch.utils.data as Data
 import argparse
@@ -14,27 +13,15 @@ from pyhocon import ConfigFactory
 from datasets import collate_fcs, SeqeuncesMotionDataset
 from model import net_dict
 from utils import *
-from model.code import get_feature_names_from_config, get_feature_dim_from_config
 
 
-def inference(network: torch.nn.Module, 
-              loader: Data.DataLoader, 
-              confs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+def inference(network, loader, confs):
     '''
-    Correction inference.
-
-    Saves the corrections generated from the network.
-
-    Args:
-        network (torch.nn.Module): The neural network model for inference.
-        loader (Data.DataLoader): The data loader for inference data.
-        confs (Dict[str, Any]): A dictionary of configurations.
-
-    Returns:
-        Dict[str, torch.Tensor]: A dictionary containing the evaluated states.
+    Correction inference
+    save the corrections generated from the network.
     '''
     network.eval()
-    evaluate_states: Dict[str, Any] = {}
+    evaluate_states = {}
     with torch.no_grad():
         inte_state = None
         for data, _, label in tqdm.tqdm(loader):
@@ -59,12 +46,7 @@ if __name__ == '__main__':
 
 
     args = parser.parse_args(); print(args)
-    
-    # Process config to merge with defaults
-    from model.code import process_config
     conf = ConfigFactory.parse_file(args.config)
-    conf = process_config(conf)
-    
     conf.train.device = args.device
     conf_name = os.path.split(args.config)[-1].split(".")[0]
     conf['general']['exp_dir'] = os.path.join(conf.general.exp_dir, conf_name)
@@ -72,35 +54,22 @@ if __name__ == '__main__':
     dataset_conf = conf.dataset.inference
     
     
-    # Get feature information from model config
-    feature_names = get_feature_names_from_config(conf.model)
-    network = net_dict[conf.model["network"]](
-        input_dim=conf.model["n_features"],
-        feature_names=conf.model["feature_names"],
-        hidden_channels=conf.model["feature_channels"],
-        kernel_sizes=conf.model["kernel_sizes"],
-        strides=conf.model["strides"],
-        padding_num=conf.model["padding_num"],
-        propcov=conf.model["propcov"],
-    ).to(args.device).double()
-
-    # Validate that dataset provides all features required by the model
-    dataset_conf.validate_features(dataset_conf.feature_names)
+    network = net_dict[conf.train.network](conf.train).to(args.device).double()
     save_folder = os.path.join(conf.general.exp_dir, "evaluate")
     os.makedirs(save_folder, exist_ok=True)
 
     if args.load is None:
         ckpt_path = os.path.join(conf.general.exp_dir, "ckpt/best_model.ckpt")
-    elif os.path.exists(os.path.join(conf.general.exp_dir, "ckpt", args.load)):
+    else:
         ckpt_path = os.path.join(conf.general.exp_dir, "ckpt", args.load)
-    elif os.path.exists(args.load):
-        ckpt_path = args.load
+
+    if os.path.exists(ckpt_path):
+        checkpoint = torch.load(ckpt_path, map_location=torch.device(args.device),weights_only=True)
+        print("loaded state dict %s in epoch %i"%(ckpt_path, checkpoint["epoch"]))
+        network.load_state_dict(checkpoint["model_state_dict"])
     else:
         raise KeyError(f"No model loaded {ckpt_path}")
-
-    checkpoint = torch.load(ckpt_path, map_location=torch.device(args.device),weights_only=True)
-    print("loaded state dict %s in epoch %i"%(ckpt_path, checkpoint["epoch"]))
-    network.load_state_dict(checkpoint["model_state_dict"])
+        sys.exit()
         
     if 'collate' in conf.dataset.keys():
         collate_fn = collate_fcs[conf.dataset.collate.type]

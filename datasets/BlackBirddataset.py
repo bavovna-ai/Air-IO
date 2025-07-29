@@ -2,58 +2,46 @@
 Reference: https://github.com/uzh-rpg/learned_inertial_model_odometry/blob/master/src/learning/data_management/prepare_datasets/blackbird.py
 """
 import os
-import logging
-from typing import Dict, Any, Optional, List
-import copy
 
 import numpy as np
-import torch
 import pypose as pp
-from scipy.spatial.transform import Rotation
+import torch
+import copy
+from utils import lookAt, qinterp, Gaussian_noise
+from .dataset import Sequence
 from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation, Slerp
+import pickle
+import json
 
-from .dataset import IMUSequence
-
-logger = logging.getLogger(__name__)
-
-class BlackBird(IMUSequence):
-    """
-    BlackBird dataset reader.
-    The features are derived from imu_data.csv which contains:
-    - Columns 1:4: Gyroscope measurements
-    - Columns 4:7: Accelerometer measurements
-    """
-    feature_dict = {
-        "gyro": ["GyrX", "GyrY", "GyrZ"],  # Columns 1:4 from imu_data.csv
-        "acc": ["AccX", "AccY", "AccZ"],    # Columns 4:7 from imu_data.csv
-    }
-
+class BlackBird(Sequence):
     def __init__(
         self,
-        data_root: str,
-        data_name: str,
-        coordinate: Optional[str] = None,
-        mode: Optional[str] = None,
-        rot_path: Optional[str] = None,
-        rot_type: Optional[str] = None,
-        gravity: float = 9.81007,
-        remove_g: bool = False,
-        **kwargs: Any
-    ) -> None:
-        super().__init__(
-            data_root=data_root,
-            data_name=data_name,
-            coordinate=coordinate,
-            mode=mode,
-            rot_path=rot_path,
-            rot_type=rot_type,
-            gravity=gravity,
-            remove_g=remove_g,
-            **kwargs
-        )
+        data_root,
+        data_name,
+        coordinate=None,
+        mode=None,
+        rot_path=None,
+        rot_type=None,
+        gravity=9.81007, 
+        remove_g=False,
+        **kwargs
+    ):
+        super(BlackBird, self).__init__()
+        (
+            self.data_root,
+            self.data_name,
+            self.data,
+            self.ts,
+            self.targets,
+            self.orientations,
+            self.gt_pos,
+            self.gt_ori,
+        ) = (data_root, data_name, dict(), None, None, None, None, None)
         
+        self.g_vector = torch.tensor([0, 0, gravity],dtype=torch.double)
         data_path = os.path.join(data_root, data_name)
-        self.load_imu(data_path, data_name)
+        self.load_imu(data_path, data_name) # timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z
         self.load_gt(data_path)
         self.refer_IMO()
         
@@ -66,8 +54,7 @@ class BlackBird(IMUSequence):
         # remove gravity term
         self.remove_gravity(remove_g)
 
-    def refer_IMO(self) -> None:
-        """Transform data to IMO reference frame."""
+    def refer_IMO(self):
         # the provided ground truth is the drone body in the NED vicon frame
         # rotate to have z upwards
         R_w_ned = np.array([
@@ -85,28 +72,30 @@ class BlackBird(IMUSequence):
         
         raw_imu = np.asarray(self.imu_data)
         thrusts = np.asarray(self.thrusts)
+
         data_tmp = self.gt_data
+
 
         data = []
         for data_i in data_tmp:
             ts_i = data_i[0] / 1e6
             
-            t_i = data_i[1:4]
+            t_i = data_i[1:4] # acc_x, acc_y, acc_z 
             R_i = Rotation.from_quat(
-                np.array([data_i[5], data_i[6], data_i[7], data_i[4]])).as_matrix()
+                np.array([data_i[5], data_i[6], data_i[7], data_i[4]])).as_matrix() # gyro_x, gyro_y, gyro_z, gyro_w 
 
             # transform to world frame
-            R_it = R_w_ned @ R_i
-            t_it = t_w_ned + R_w_ned @ t_i
+            R_it = R_w_ned @ R_i #turns down the z axis
+            t_it = t_w_ned + R_w_ned @ t_i #turns down the z axis
 
-            # transform to imu frame
-            t_it = t_it + R_it @ t_b_i
+            # transform to imu frame 
+            t_it = t_it + R_it @ t_b_i #nothing happens
             R_it = R_it @ R_b_i
 
             q_it = Rotation.from_matrix(R_it).as_quat()
             d = np.array([
                 ts_i,
-                t_it[0], t_it[1], t_it[2],
+                t_it[0], t_it[1], t_it[2], #turns down the z axis
                 q_it[0], q_it[1], q_it[2], q_it[3]
             ])
             data.append(d)
@@ -177,32 +166,30 @@ class BlackBird(IMUSequence):
 
         times_imu = times_imu[idx_s:idx_e + 1]
  
+ 
         raw_imu = raw_imu[idx_s:idx_e + 1]
-        self.data["gyro"] = torch.tensor(raw_imu[:, 1:4], dtype=self.dtype)
-        self.data["acc"] = torch.tensor(raw_imu[:, 4:], dtype=self.dtype)
+        self.data["gyro"] = torch.tensor(raw_imu[:, 1:4])
+        self.data["acc"] = torch.tensor(raw_imu[:, 4:])
 
         # interpolate ground-truth samples at thrust times
-        self.data["gt_translation"] = torch.tensor(
-            interp1d(gt_traj_tmp[:, 0], gt_traj_tmp[:, 1:4], axis=0)(times_imu),
-            dtype=self.dtype
-        )
-        # alternative to Slerp (from scipy.spatial.transform import Slerp)
-        self.data["gt_orientation"] = pp.SO3(torch.tensor(
-            Rotation.from_quat(gt_traj_tmp[:, 4:8])(times_imu).as_quat(),
-            dtype=self.dtype
-        ))
-        self.data["velocity"] = torch.tensor(
-            interp1d(gt_traj_tmp[:, 0], gt_traj_tmp[:, 8:11], axis=0)(times_imu),
-            dtype=self.dtype
-        )
+        self.data["gt_translation"]  = interp1d(gt_traj_tmp[:, 0], gt_traj_tmp[:, 1:4], axis=0)(times_imu)
+        self.data["gt_orientation"] = Slerp(gt_traj_tmp[:, 0], Rotation.from_quat(gt_traj_tmp[:, 4:8]))(times_imu).as_quat()
+        self.data["velocity"] = interp1d(gt_traj_tmp[:, 0], gt_traj_tmp[:, 8:11], axis=0)(times_imu)
         
-        self.data["gt_time"] = torch.tensor(times_imu, dtype=self.dtype)
-        self.data["time"] = torch.tensor(times_imu, dtype=self.dtype)
+        
+        self.data["gt_translation"]  = torch.tensor(self.data["gt_translation"])
+        self.data["gt_orientation"] = pp.SO3(torch.tensor(self.data["gt_orientation"]))
+        self.data["velocity"] = torch.tensor(self.data["velocity"])
+        self.data["gt_time"] = torch.tensor(times_imu)
+        self.data["time"] = torch.tensor(times_imu)
         self.data["dt"] = (self.data["time"][1:] - self.data["time"][:-1])[:, None]
         self.data["mask"] = torch.ones(self.data["time"].shape[0], dtype=torch.bool)
 
-    def load_imu(self, folder: str, data_name: Optional[str] = None) -> None:
-        """Load IMU data from CSV file."""
+    def get_length(self):
+        return self.data["time"].shape[0]
+    
+
+    def load_imu(self, folder,data_name=None):
         imu_data = np.loadtxt(
             os.path.join(folder, "imu_data.csv"), dtype=float, delimiter=","
         )
@@ -212,11 +199,66 @@ class BlackBird(IMUSequence):
         self.imu_data = copy.deepcopy(imu_data)
         self.thrusts = copy.deepcopy(thrusts)
 
-    def load_gt(self, folder: str) -> None:
-        """Load ground truth data from CSV file."""
+
+
+    def load_gt(self, folder):
         gt_data = np.loadtxt(
             os.path.join(folder, "groundTruthPoses.csv"),
             dtype=float,
             delimiter=",",
         )
         self.gt_data = copy.deepcopy(gt_data)
+    
+
+    def update_coordinate(self, coordinate, mode):
+        """
+        Updates the data (imu / velocity) based on the required mode.
+        :param coordinate: The target coordinate system ('glob_coord' or 'body_coord').
+        :param mode: The dataset mode, only rotating the velocity during training. 
+        """
+        if coordinate is None:
+            print("No coordinate system provided. Skipping update.")
+            return
+        try:
+            if coordinate == "glob_coord":
+                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"]
+                self.data["acc"] = self.data["gt_orientation"] @ self.data["acc"]
+            elif coordinate == "body_coord":
+                self.g_vector = self.data["gt_orientation"].Inv() @ self.g_vector
+                if mode != "infevaluate" and mode != "inference":
+                    self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
+            else:
+                raise ValueError(f"Unsupported coordinate system: {coordinate}")
+        except Exception as e:
+            print("An error occurred while updating coordinates:", e)
+            raise e
+
+    def set_orientation(self, exp_path, data_name, rotation_type):
+        """
+        Sets the ground truth orientation based on the provided rotation.
+        :param exp_path: Path to the pickle file containing orientation data.
+        :param rotation_type: The type of rotation within the pickle file (AirIMU corrected orientation / raw imu Pre-integration).
+        """
+        if rotation_type is None or rotation_type == "None" or rotation_type.lower() == "gtrot":
+            return
+        try:
+            with open(exp_path, 'rb') as file:
+                loaded_data = pickle.load(file)
+            state = loaded_data[data_name]
+            
+
+            if rotation_type.lower() == "airimu":
+                self.data["gt_orientation"] = state['airimu_rot']
+            elif rotation_type.lower() == "integration":
+                self.data["gt_orientation"] = state['inte_rot']
+            else:
+                print(f"Unsupported rotation type: {rotation_type}")
+                raise ValueError(f"Unsupported rotation type: {rotation_type}")
+        except FileNotFoundError:
+            print(f"The file {exp_path} was not found.")
+            raise
+    
+    def remove_gravity(self,remove_g):
+        if remove_g is True:
+                print("gravity has been removed")
+                self.data["acc"] -= self.g_vector

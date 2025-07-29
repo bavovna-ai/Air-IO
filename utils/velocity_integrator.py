@@ -1,34 +1,15 @@
 import torch
 from torch import nn
-from typing import Dict, Optional, Any
 
 from utils import move_to
 
 
 class Velocity_Integrator(nn.Module):
-    """
-    Integrates velocity over time to compute position.
-    """
-    def __init__(self, pos: torch.Tensor = torch.zeros(3)):
-        """
-        Initializes the Velocity_Integrator.
-
-        Args:
-            pos (torch.Tensor, optional): The initial position. Defaults to zeros.
-        """
+    def __init__(self, pos = torch.zeros(3)):
         super().__init__()
         self.register_buffer('pos',self._check(pos).clone(), persistent=False)
         
-    def _check(self, obj: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        """
-        Checks and adjusts the shape of the input tensor.
-
-        Args:
-            obj (Optional[torch.Tensor]): The input tensor.
-
-        Returns:
-            Optional[torch.Tensor]: The reshaped tensor.
-        """
+    def _check(self, obj):
         if obj is not None:
             if len(obj.shape) == 2:
                 obj = obj[None, ...]
@@ -37,24 +18,8 @@ class Velocity_Integrator(nn.Module):
                 obj = obj[None, None, ...]
         return obj
 
-    def forward(self, dt: torch.Tensor, 
-                vel: torch.Tensor, 
-                init_state: Optional[Dict[str, torch.Tensor]] = None) -> Dict[str, torch.Tensor]:
-        """
-        Performs the forward pass of the integrator.
-
-        Args:
-            dt (torch.Tensor): The time intervals.
-            vel (torch.Tensor): The velocities.
-            init_state (Optional[Dict[str, torch.Tensor]], optional): The initial state. 
-                                                                    Defaults to None.
-
-        Returns:
-            Dict[str, torch.Tensor]: The resulting state dictionary.
-        """
+    def forward(self, dt, vel, init_state=None):
         dt = self._check(dt)
-        if dt is None:
-            raise ValueError("dt cannot be None")
         B = dt.shape[0]
 
         if init_state is None:
@@ -66,20 +31,7 @@ class Velocity_Integrator(nn.Module):
         
         return {**predict}
     
-    def integrate(self, dt: torch.Tensor, 
-                  vel: torch.Tensor, 
-                  init_state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """
-        Integrates velocity to get position increments.
-
-        Args:
-            dt (torch.Tensor): The time intervals.
-            vel (torch.Tensor): The velocities.
-            init_state (Dict[str, torch.Tensor]): The initial state.
-
-        Returns:
-            Dict[str, torch.Tensor]: A dictionary containing the final position.
-        """
+    def integrate(self, dt, vel,init_state):
         B, F = dt.shape[:2]
         
         dp = torch.zeros(B,1,3,dtype = dt.dtype, device = dt.device)
@@ -92,25 +44,8 @@ class Velocity_Integrator(nn.Module):
    
  
 # #################TEST#############
-def integrate_pos(integrator: Velocity_Integrator, 
-                  datainte: Dict[str, torch.Tensor], 
-                  init: Dict[str, torch.Tensor],
-                  dataset: Any, 
-                  device: str = "cpu") -> Dict[str, torch.Tensor]:
-    """
-    Integrates position using the Velocity_Integrator.
-
-    Args:
-        integrator (Velocity_Integrator): The velocity integrator instance.
-        datainte (Dict[str, torch.Tensor]): A dictionary containing 'dt' and 'vel' tensors.
-        init (Dict[str, torch.Tensor]): The initial state.
-        dataset (Any): The dataset object.
-        device (str, optional): The device to use. Defaults to "cpu".
-
-    Returns:
-        Dict[str, torch.Tensor]: A dictionary containing the output state and error metrics.
-    """
-    out_state: Dict[str, torch.Tensor] = dict()
+def integrate_pos(integrator, datainte, init,dataset, device="cpu"):
+    out_state = dict()
     vel_gt, poses_gt = [init['vel'][None,:]],[init['pos'][None,:]]
     state = integrator(
             dt=datainte['dt'][...,None],vel=datainte["vel"][None,...]

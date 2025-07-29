@@ -5,23 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pypose as pp
 import torch
-from typing import Dict, Any, Optional
 
-def visualize_motion(save_prefix: str, 
-                     save_folder: str, 
-                     outstate: Dict[str, torch.Tensor], 
-                     infstate: Dict[str, torch.Tensor], 
-                     label: str = "AirIO") -> None:
-    """
-    Visualizes motion, including 2D trajectory and velocity.
-
-    Args:
-        save_prefix (str): The prefix for the saved file name.
-        save_folder (str): The folder to save the visualization in.
-        outstate (Dict[str, torch.Tensor]): The output state from the model.
-        infstate (Dict[str, torch.Tensor]): The inference state from the model.
-        label (str, optional): The label for the model's trajectory. Defaults to "AirIO".
-    """
+def visualize_motion(save_prefix, save_folder, outstate,infstate,label="AirIO"):
     ### visualize gt&netoutput velocity, 2d trajectory. 
     gt_x, gt_y, gt_z                = torch.split(outstate["poses_gt"][0].cpu(), 1, dim=1)
     airTraj_x, airTraj_y, airTraj_z = torch.split(infstate["poses"][0].cpu(), 1, dim=1)
@@ -63,22 +48,7 @@ def visualize_motion(save_prefix: str,
     plt.savefig(os.path.join(save_folder, save_prefix), dpi = 300)
     plt.close()
 
-def visualize_rotations(save_prefix: str, 
-                        gt_rot: torch.Tensor, 
-                        out_rot: torch.Tensor, 
-                        inf_rot: Optional[torch.Tensor] = None, 
-                        save_folder: Optional[str] = None) -> None:
-    """
-    Visualizes and compares rotations in Euler angles.
-
-    Args:
-        save_prefix (str): The prefix for the saved file name.
-        gt_rot (torch.Tensor): The ground truth rotation.
-        out_rot (torch.Tensor): The output rotation from the model.
-        inf_rot (Optional[torch.Tensor], optional): The inference rotation. Defaults to None.
-        save_folder (Optional[str], optional): The folder to save the visualization in. 
-                                                Defaults to None.
-    """
+def visualize_rotations(save_prefix, gt_rot, out_rot, inf_rot=None, save_folder=None):
     gt_euler = np.unwrap(pp.SO3(gt_rot).euler(), axis=0, discont=np.pi/2) * 180.0 / np.pi
     outstate_euler = np.unwrap(pp.SO3(out_rot).euler(), axis=0, discont=np.pi/2) * 180.0 / np.pi
 
@@ -113,23 +83,7 @@ def visualize_rotations(save_prefix: str,
     plt.close()
 
 
-def visualize_velocity(save_prefix: str, 
-                       gtstate: torch.Tensor, 
-                       outstate: torch.Tensor, 
-                       refstate: Optional[torch.Tensor] = None, 
-                       save_folder: Optional[str] = None) -> None:
-    """
-    Visualizes and compares velocity.
-
-    Args:
-        save_prefix (str): The prefix for the saved file name.
-        gtstate (torch.Tensor): The ground truth velocity.
-        outstate (torch.Tensor): The output velocity from the model.
-        refstate (Optional[torch.Tensor], optional): A reference velocity for comparison. 
-                                                    Defaults to None.
-        save_folder (Optional[str], optional): The folder to save the visualization in. 
-                                                Defaults to None.
-    """
+def visualize_velocity(save_prefix, gtstate, outstate, refstate=None, save_folder=None):
     legend_list = ["x", "y", "z"]
     fig, axs = plt.subplots(
         3,
