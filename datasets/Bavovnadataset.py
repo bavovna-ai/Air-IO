@@ -37,6 +37,7 @@ class Bavovna(Sequence):
             self.gt_ori, # ground truth orientation
         ) = (data_root, data_name, dict(), None, None, None, None, None)
         self.g_vector = torch.tensor([0, 0, gravity], dtype=torch.double)
+        print("HELLO\n")
         self.load_data(data_root, data_name) # For Bavovna dataset, the CSV file is directly in the data_root directory
         self.convert_to_torch() # Convert to torch tensors
         self.set_orientation(rot_path, data_name, rot_type) # For Bavovna dataset, we can leave it empty as we're using ground truth orientation
@@ -60,12 +61,13 @@ class Bavovna(Sequence):
         df = pd.read_csv(csv_file)
         
         # Extract IMU data
-        self.data["time"] = df["TimeUS"].values  # Timestamp (microseconds)
+        self.data["time"] = df["TimeUS"].values / 1e6  # Convert microseconds to seconds
+        print("TIMEE", self.data["time"])    
         self.data["acc"] = df[["AccX", "AccY", "AccZ"]].values  # Accelerometer data
         self.data["gyro"] = df[["GyrX", "GyrY", "GyrZ"]].values  # Gyroscope data
         
         # Extract ground truth data
-        self.data["gt_time"] = df["TimeUS"].values  # Same timestamps as IMU
+        self.data["gt_time"] = df["TimeUS"].values / 1e6  # Convert microseconds to seconds
         self.data["pos"] = df[["PN", "PE", "PD"]].values # Position data (PN, PE, PD - North, East, Down)
         self.data["quat"] = df[["Q1", "Q2", "Q3", "Q4"]].values # Quaternion data (Q1, Q2, Q3, Q4)
         self.data["velocity"] = df[["VN", "VE", "VD"]].values # Velocity data (VN, VE, VD - North, East, Down velocity
