@@ -85,7 +85,7 @@ class Euroc(Sequence):
         self.update_coordinate(coordinate, mode)
         
         # remove gravity term
-        self.remove_gravity(remove_g)
+        # self.remove_gravity(remove_g)
         
     def get_length(self):
         return self.data["time"].shape[0]
@@ -134,14 +134,15 @@ class Euroc(Sequence):
         :param coordinate: The target coordinate system ('glob_coord' or 'body_coord').
         :param mode: The dataset mode, only rotating the velocity during training. 
         """
+        print("coordinate: ", coordinate)
         if coordinate is None:
             print("No coordinate system provided. Skipping update.")
             return
         try:
-            if coordinate == "glob_coord":
-                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"]
+            if coordinate == "glob_coord": #Rotates the IMU signals (gyro and acc) from the body frame to the global frame.
+                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"] 
                 self.data["acc"] = self.data["gt_orientation"] @ self.data["acc"]
-            elif coordinate == "body_coord":
+            elif coordinate == "body_coord": 
                 self.g_vector = self.data["gt_orientation"].Inv() @ self.g_vector
                 if mode != "infevaluate" and mode != "inference":
                     self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]

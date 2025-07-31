@@ -7,6 +7,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.utils import lookAt, qinterp, Gaussian_noise
 from .dataset import Sequence
+from scipy.spatial.transform import Rotation
 
 class Bavovna(Sequence):
     """
@@ -36,7 +37,9 @@ class Bavovna(Sequence):
             self.gt_pos, # ground truth position
             self.gt_ori, # ground truth orientation
         ) = (data_root, data_name, dict(), None, None, None, None, None)
-        self.g_vector = torch.tensor([0, 0, gravity], dtype=torch.double)
+        # Gravity vector in world frame (Z-up)
+        # After NED to world transformation, gravity points downward (-Z)
+        self.g_vector = torch.tensor([0, 0, -gravity], dtype=torch.double)
         print("HELLO\n")
         self.load_data(data_root, data_name) # For Bavovna dataset, the CSV file is directly in the data_root directory
         self.convert_to_torch() # Convert to torch tensors
@@ -56,21 +59,28 @@ class Bavovna(Sequence):
                 if os.path.exists(os.path.join(folder, filename)):
                     csv_file = os.path.join(folder, filename)
                     break
-        
         # Load data with pandas for better column handling
         df = pd.read_csv(csv_file)
         
-        # Extract IMU data
+        # Extract IMU data in body frame
         self.data["time"] = df["TimeUS"].values / 1e6  # Convert microseconds to seconds
-        print("TIMEE", self.data["time"])    
-        self.data["acc"] = df[["AccX", "AccY", "AccZ"]].values  # Accelerometer data
-        self.data["gyro"] = df[["GyrX", "GyrY", "GyrZ"]].values  # Gyroscope data
-        
-        # Extract ground truth data
+        acc_raw = df[["AccX", "AccY", "AccZ"]].values
+        gyro_raw = df[["GyrX", "GyrY", "GyrZ"]].values
+        self.data["acc"] = np.array([acc_raw[:, 0], acc_raw[:, 1], acc_raw[:, 2]]).T
+        self.data["gyro"] = np.array([gyro_raw[:, 0], gyro_raw[:, 1], gyro_raw[:, 2]]).T
+
+        # Extract ground truth data from NED which is a type of world/global frame
         self.data["gt_time"] = df["TimeUS"].values / 1e6  # Convert microseconds to seconds
-        self.data["pos"] = df[["PN", "PE", "PD"]].values # Position data (PN, PE, PD - North, East, Down)
-        self.data["quat"] = df[["Q1", "Q2", "Q3", "Q4"]].values # Quaternion data (Q1, Q2, Q3, Q4)
-        self.data["velocity"] = df[["VN", "VE", "VD"]].values # Velocity data (VN, VE, VD - North, East, Down velocity
+        # Transform position and velocity from NED to world frame
+        pos_ned = df[["PN", "PE", "PD"]].values
+        vel_ned = df[["VN", "VE", "VD"]].values 
+        self.data["pos"] = np.array([pos_ned[:, 0], pos_ned[:, 1], -pos_ned[:, 2]]).T  # North, East, Up
+        self.data["velocity"] = np.array([vel_ned[:, 0], vel_ned[:, 1], -vel_ned[:, 2]]).T  # North, East, Up velocity
+        # Quaternion transformation for NED to world frame
+        # For NED to world (Z-up), we need to rotate around X-axis by 180 degrees
+        # This is equivalent to negating the Y and Z components of the quaternion
+        quat_raw = df[["Q1", "Q2", "Q3", "Q4"]].values  # w, x, y, z
+        self.data["quat"] = np.array([quat_raw[:, 0], quat_raw[:, 1], -quat_raw[:, 2], -quat_raw[:, 3]]).T
         
         # Additional data that might be useful
         self.data["altitude"] = df["Alt"].values
@@ -93,20 +103,17 @@ class Bavovna(Sequence):
         # Trim data to synchronized range
         for k in ["gt_time", "pos", "quat", "velocity"]:
             self.data[k] = self.data[k][idx_start_gt:idx_end_gt]
-        
         for k in ["time", "acc", "gyro"]:
             self.data[k] = self.data[k][idx_start_imu:idx_end_imu]
     
         # Interpolate GT data to IMU timestamps for consistency
-        self.data["gt_orientation"] = self.interp_rot(
-            self.data["time"], self.data["gt_time"], self.data["quat"]
-        )
-        self.data["gt_translation"] = self.interp_xyz(
-            self.data["time"], self.data["gt_time"], self.data["pos"]
-        )
-        self.data["velocity"] = self.interp_xyz(
-            self.data["time"], self.data["gt_time"], self.data["velocity"]
-        )
+        self.data["gt_orientation"] = self.interp_rot(self.data["time"], self.data["gt_time"], self.data["quat"])
+        self.data["gt_translation"] = self.interp_xyz(self.data["time"], self.data["gt_time"], self.data["pos"])
+        self.data["velocity"] = self.interp_xyz(self.data["time"], self.data["gt_time"], self.data["velocity"])
+        self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
+        # self.data["position"] = self.data["gt_orientation"].Inv() @ self.data["position"]
+
+
     
     def interp_rot(self, time, opt_time, quat):
         """Interpolate quaternion data to IMU timestamps"""
@@ -186,6 +193,44 @@ class Bavovna(Sequence):
             print("removing gravity\n")
             gravity_vector = self.g_vector.unsqueeze(0).expand(self.data["acc"].shape[0], -1)
             self.data["acc"] = self.data["acc"] - gravity_vector
+    
+    def verify_coordinate_transformation(self):
+        """Verify that the coordinate transformation from NED to world frame is correct"""
+        print("\n🔍 COORDINATE TRANSFORMATION VERIFICATION")
+        print("=" * 50)
+        
+        # Check acceleration (should show gravity in -Z direction)
+        acc_mean = torch.mean(self.data["acc"], dim=0)
+        print(f"Acceleration mean: {acc_mean.numpy()}")
+        print(f"Expected gravity direction: [0, 0, -9.81]")
+        print(f"Gravity component in Z: {acc_mean[2]:.3f} m/s²")
+        
+        # Check position (Z should be positive for upward movement)
+        pos = self.data["gt_translation"]
+        z_range = torch.min(pos[:, 2]).item(), torch.max(pos[:, 2]).item()
+        print(f"Position Z range: [{z_range[0]:.2f}, {z_range[1]:.2f}] m")
+        print(f"Expected: Z should be positive for upward movement")
+        
+        # Check velocity (Z should be positive for upward movement)
+        vel = self.data["velocity"]
+        vel_z_mean = torch.mean(vel[:, 2]).item()
+        print(f"Velocity Z mean: {vel_z_mean:.3f} m/s")
+        print(f"Expected: Positive for upward movement")
+        
+        # Check quaternion norm (should be 1)
+        if 'gt_orientation' in self.data:
+            quat = self.data["gt_orientation"]
+            if hasattr(quat, 'tensor'):
+                quat_data = quat.tensor()
+            else:
+                quat_data = quat
+            
+            quat_norms = torch.norm(quat_data, dim=1)
+            norm_error = torch.mean(torch.abs(quat_norms - 1.0)).item()
+            print(f"Quaternion norm error: {norm_error:.6f}")
+            print(f"Expected: Close to 0")
+        
+        print("✅ Coordinate transformation verification complete")
 
 
 if __name__ == "__main__":
@@ -196,14 +241,15 @@ if __name__ == "__main__":
         rot_path=None,
         rot_type=None,
     )
-    print(dataset.data["time"])
-    print(dataset.data["acc"])
-    print(dataset.data["gyro"])
-    print(dataset.data["quat"])
-    print(dataset.data["pos"])
-    print(dataset.data["velocity"])
-    print(dataset.data["altitude"])
-    print(dataset.data["magnetometer"])
-    print(dataset.data["euler"])
-    print(dataset.data["gps"])
-    print(dataset.data["status"])
+    
+    # Verify coordinate transformation
+    dataset.verify_coordinate_transformation()
+    
+    print("\n📊 DATASET SUMMARY")
+    print("=" * 30)
+    print(f"Time range: {dataset.data['time'][0]:.2f} - {dataset.data['time'][-1]:.2f} s")
+    print(f"Total frames: {dataset.get_length()}")
+    print(f"Frame rate: {dataset.get_length() / (dataset.data['time'][-1] - dataset.data['time'][0]):.1f} Hz")
+    print(f"Position range: X=[{torch.min(dataset.data['gt_translation'][:, 0]):.1f}, {torch.max(dataset.data['gt_translation'][:, 0]):.1f}] m")
+    print(f"                Y=[{torch.min(dataset.data['gt_translation'][:, 1]):.1f}, {torch.max(dataset.data['gt_translation'][:, 1]):.1f}] m")
+    print(f"                Z=[{torch.min(dataset.data['gt_translation'][:, 2]):.1f}, {torch.max(dataset.data['gt_translation'][:, 2]):.1f}] m")
