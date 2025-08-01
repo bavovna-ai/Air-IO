@@ -56,14 +56,14 @@ class BlackBird(Sequence):
 
     def refer_IMO(self):
         # the provided ground truth is the drone body in the NED vicon frame
-        # rotate to have z upwards
+        # rotate to have z upwards 
         R_w_ned = np.array([
             [1., 0., 0.],
             [0., -1., 0.],
             [0., 0., -1.]])
         t_w_ned = np.array([0., 0., 0.])
 
-        # rotate from body to imu frame
+        # rotate from body to imu frame 
         R_b_i = np.array([
             [0., -1., 0.],
             [1., 0., 0.],
@@ -85,7 +85,7 @@ class BlackBird(Sequence):
                 np.array([data_i[5], data_i[6], data_i[7], data_i[4]])).as_matrix() # gyro_x, gyro_y, gyro_z, gyro_w 
 
             # transform to world frame
-            R_it = R_w_ned @ R_i #turns down the z axis
+            R_it = R_w_ned @ R_i #turns down the y and z axis
             t_it = t_w_ned + R_w_ned @ t_i #turns down the z axis
 
             # transform to imu frame 

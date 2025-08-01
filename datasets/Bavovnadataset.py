@@ -8,6 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.utils import lookAt, qinterp, Gaussian_noise
 from .dataset import Sequence
 from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation as R
 
 class Bavovna(Sequence):
     """
@@ -36,11 +37,14 @@ class Bavovna(Sequence):
             self.orientations, # orientations
             self.gt_pos, # ground truth position
             self.gt_ori, # ground truth orientation
-        ) = (data_root, data_name, dict(), None, None, None, None, None)
+            self.coordinate, # coordinate   
+            self.mode, # mode
+        ) = (data_root, data_name, dict(), None, None, None, None, None, coordinate, mode)
+        print("coordinate: ", self.coordinate)
+        print("mode: ", self.mode)
         # Gravity vector in world frame (Z-up)
         # After NED to world transformation, gravity points downward (-Z)
         self.g_vector = torch.tensor([0, 0, -gravity], dtype=torch.double)
-        print("HELLO\n")
         self.load_data(data_root, data_name) # For Bavovna dataset, the CSV file is directly in the data_root directory
         self.convert_to_torch() # Convert to torch tensors
         self.set_orientation(rot_path, data_name, rot_type) # For Bavovna dataset, we can leave it empty as we're using ground truth orientation
@@ -71,17 +75,21 @@ class Bavovna(Sequence):
 
         # Extract ground truth data from NED which is a type of world/global frame
         self.data["gt_time"] = df["TimeUS"].values / 1e6  # Convert microseconds to seconds
-        # Transform position and velocity from NED to world frame
+        # Transform position and velocity from NED to ENU frame
         pos_ned = df[["PN", "PE", "PD"]].values
         vel_ned = df[["VN", "VE", "VD"]].values 
         self.data["pos"] = np.array([pos_ned[:, 0], pos_ned[:, 1], -pos_ned[:, 2]]).T  # North, East, Up
         self.data["velocity"] = np.array([vel_ned[:, 0], vel_ned[:, 1], -vel_ned[:, 2]]).T  # North, East, Up velocity
         # Quaternion transformation for NED to world frame
-        # For NED to world (Z-up), we need to rotate around X-axis by 180 degrees
-        # This is equivalent to negating the Y and Z components of the quaternion
-        quat_raw = df[["Q1", "Q2", "Q3", "Q4"]].values  # w, x, y, z
-        self.data["quat"] = np.array([quat_raw[:, 0], quat_raw[:, 1], -quat_raw[:, 2], -quat_raw[:, 3]]).T
-        
+        # For NED to world (Z-up), we need to rotate around X-axis by 180 degrees, this is equivalent to negating the Y and Z components of the quaternion
+        quat_raw = df[["Q1", "Q2", "Q3", "Q4"]].values # Load raw quaternion (w, x, y, z)
+        quat_xyzw = quat_raw[:, [1, 2, 3, 0]]# Convert to (x, y, z, w) for scipy
+        r_ned_to_enu = R.from_euler('x', 180, degrees=True) # Apply 180° rotation about X-axis to convert NED to ENU/world frame
+        r_body_ned = R.from_quat(quat_xyzw)  # Rotate from NED to ENU/world frame
+        r_body_world = r_ned_to_enu * r_body_ned  # Compose the rotations
+        quat_world = r_body_world.as_quat()[:, [3, 0, 1, 2]] # Convert back to (w, x, y, z)
+        self.data["quat"] = quat_world
+
         # Additional data that might be useful
         self.data["altitude"] = df["Alt"].values
         self.data["magnetometer"] = df[["MagX", "MagY", "MagZ"]].values
@@ -110,10 +118,8 @@ class Bavovna(Sequence):
         self.data["gt_orientation"] = self.interp_rot(self.data["time"], self.data["gt_time"], self.data["quat"])
         self.data["gt_translation"] = self.interp_xyz(self.data["time"], self.data["gt_time"], self.data["pos"])
         self.data["velocity"] = self.interp_xyz(self.data["time"], self.data["gt_time"], self.data["velocity"])
-        self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
-        # self.data["position"] = self.data["gt_orientation"].Inv() @ self.data["position"]
 
-
+        self.update_coordinate(self.coordinate, self.mode) # Update coordinate to body frame
     
     def interp_rot(self, time, opt_time, quat):
         """Interpolate quaternion data to IMU timestamps"""
@@ -161,23 +167,14 @@ class Bavovna(Sequence):
     
     def update_coordinate(self, coordinate, mode):
         """Transform between coordinate frames"""
-        if coordinate == "body_coord":
-            # Transform to body frame if needed
-            # Your data might already be in body frame
-            #print("updating coordinate to body frame\n")
-
-            # Rotate the quaternion to the body frame
-            #self.data["gt_orientation"] = self.data["gt_orientation"].rotate(self.data["gt_orientation"])
-
-            # Rotate the accelerometer and gyro data to the body frame
-            #self.data["acc"] = self.data["acc"].rotate(self.data["gt_orientation"])
-            #self.data["gyro"] = self.data["gyro"].rotate(self.data["gt_orientation"])
-            pass
-
-        elif coordinate == "glob_coord":
-            # Transform to global frame if needed
-            # Your data might already be in global frame
-            pass
+        if coordinate == "glob_coord": #Rotates the IMU signals (gyro and acc) from the body frame to the global frame.
+                self.data["gyro"] = self.data["gt_orientation"] @ self.data["gyro"] 
+                self.data["acc"] = self.data["gt_orientation"] @ self.data["acc"]
+        elif coordinate == "body_coord": 
+                print("updating coordinate to body frame\n")
+                self.g_vector = self.data["gt_orientation"].Inv() @ self.g_vector
+                if mode != "infevaluate" and mode != "inference":
+                    self.data["velocity"] = self.data["gt_orientation"].Inv() @ self.data["velocity"]
     
     def set_orientation(self, exp_path, data_name, rotation_type):
         """Set orientation for evaluation (optional)"""
@@ -193,44 +190,6 @@ class Bavovna(Sequence):
             print("removing gravity\n")
             gravity_vector = self.g_vector.unsqueeze(0).expand(self.data["acc"].shape[0], -1)
             self.data["acc"] = self.data["acc"] - gravity_vector
-    
-    def verify_coordinate_transformation(self):
-        """Verify that the coordinate transformation from NED to world frame is correct"""
-        print("\n🔍 COORDINATE TRANSFORMATION VERIFICATION")
-        print("=" * 50)
-        
-        # Check acceleration (should show gravity in -Z direction)
-        acc_mean = torch.mean(self.data["acc"], dim=0)
-        print(f"Acceleration mean: {acc_mean.numpy()}")
-        print(f"Expected gravity direction: [0, 0, -9.81]")
-        print(f"Gravity component in Z: {acc_mean[2]:.3f} m/s²")
-        
-        # Check position (Z should be positive for upward movement)
-        pos = self.data["gt_translation"]
-        z_range = torch.min(pos[:, 2]).item(), torch.max(pos[:, 2]).item()
-        print(f"Position Z range: [{z_range[0]:.2f}, {z_range[1]:.2f}] m")
-        print(f"Expected: Z should be positive for upward movement")
-        
-        # Check velocity (Z should be positive for upward movement)
-        vel = self.data["velocity"]
-        vel_z_mean = torch.mean(vel[:, 2]).item()
-        print(f"Velocity Z mean: {vel_z_mean:.3f} m/s")
-        print(f"Expected: Positive for upward movement")
-        
-        # Check quaternion norm (should be 1)
-        if 'gt_orientation' in self.data:
-            quat = self.data["gt_orientation"]
-            if hasattr(quat, 'tensor'):
-                quat_data = quat.tensor()
-            else:
-                quat_data = quat
-            
-            quat_norms = torch.norm(quat_data, dim=1)
-            norm_error = torch.mean(torch.abs(quat_norms - 1.0)).item()
-            print(f"Quaternion norm error: {norm_error:.6f}")
-            print(f"Expected: Close to 0")
-        
-        print("✅ Coordinate transformation verification complete")
 
 
 if __name__ == "__main__":
@@ -245,7 +204,7 @@ if __name__ == "__main__":
     # Verify coordinate transformation
     dataset.verify_coordinate_transformation()
     
-    print("\n📊 DATASET SUMMARY")
+    print("\nDATASET SUMMARY")
     print("=" * 30)
     print(f"Time range: {dataset.data['time'][0]:.2f} - {dataset.data['time'][-1]:.2f} s")
     print(f"Total frames: {dataset.get_length()}")

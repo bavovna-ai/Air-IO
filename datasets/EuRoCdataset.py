@@ -77,13 +77,17 @@ class Euroc(Sequence):
         self.data["gyro"] = torch.tensor(self.data["gyro"])
         self.data["acc"] = torch.tensor(self.data["acc"])
 
+        #add gravity term
+        print("acc before: ", self.data["acc"])
+        #self.data["acc"] -= self.g_vector
+        print("acc after: ", self.data["acc"])
 
         # when evaluation: load airimu or integrated orientation:
         self.set_orientation(rot_path, data_name, rot_type)
         
         # transform to global/body frame:
         self.update_coordinate(coordinate, mode)
-        
+
         # remove gravity term
         # self.remove_gravity(remove_g)
         
@@ -97,6 +101,7 @@ class Euroc(Sequence):
         self.data["time"] = imu_data[:, 0] / 1e9
         self.data["gyro"] = imu_data[:, 1:4]  # w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1]
         self.data["acc"] = imu_data[:, 4:]  # acc a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]
+
     def load_gt(self, folder):
         gt_data = np.loadtxt(
             os.path.join(folder, "mav0/state_groundtruth_estimate0/data.csv"),
@@ -178,6 +183,7 @@ class Euroc(Sequence):
             raise
 
     def remove_gravity(self,remove_g):
-        if remove_g is True:
-                print("gravity has been removed")
-                self.data["acc"] -= self.g_vector
+        pass
+        #if remove_g is True:
+        #        print("gravity has been removed")
+        #        self.data["acc"] -= self.g_vector

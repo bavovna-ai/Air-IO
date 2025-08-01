@@ -7,6 +7,9 @@ import json
 import argparse
 import numpy as np
 import pypose as pp
+import matplotlib.pyplot as plt
+from scipy import stats
+
 
 import torch
 import torch.utils.data as Data
@@ -18,7 +21,9 @@ from utils import CPU_Unpickler, integrate, interp_xyz
 from utils.velocity_integrator import Velocity_Integrator, integrate_pos
 
 from utils.visualize_state import visualize_motion
- 
+
+from test_error_analysis import plot_error_with_time
+
 def calculate_rte(outstate,duration, step_size):
     poses, poses_gt = outstate['poses'],outstate['poses_gt'][1:,:]
 
@@ -150,7 +155,66 @@ if __name__ == '__main__':
                 print("rte",inf_rte.mean())
 
             visualize_motion(save_prefix, folder,outstate,inf_outstate)
+            
+            #new - Generate error vs time plots
+            if args.exp is not None:
+                # Get time array from the dataset - use time[1:] since error arrays start from index 1
+                time_array = motion_dataset.data['time'][1:]  # Skip initial time since errors are differences
+                # Handle tensor dimensions properly
+                pos_dist = inf_outstate['pos_dist']
+                vel_dist = inf_outstate['vel_dist']
+                # If tensors are 0-dimensional (scalars), convert to 1D
+                if pos_dist.dim() == 0:
+                    pos_dist = pos_dist.unsqueeze(0)
+                    print("Converted pos_dist from scalar to 1D")
+                if vel_dist.dim() == 0:
+                    vel_dist = vel_dist.unsqueeze(0)
+                    print("Converted vel_dist from scalar to 1D")
+                # If tensors are 2D, take the first batch
+                if pos_dist.dim() == 2:
+                    pos_dist = pos_dist[0]
+                    print("Extracted first batch from pos_dist")
+                if vel_dist.dim() == 2:
+                    vel_dist = vel_dist[0]
+                    print("Extracted first batch from vel_dist")
+                # Verify array lengths match
+                if len(time_array) != len(pos_dist):
+                    print(f"Warning: Time array length ({len(time_array)}) != Position error length ({len(pos_dist)})")
+                if len(time_array) != len(vel_dist):
+                    print(f"Warning: Time array length ({len(time_array)}) != Velocity error length ({len(vel_dist)})")
+                
+                # Plot position error vs time
+                pos_error_plot_path = os.path.join(folder, f"{save_prefix}_position_error_vs_time.png")
+                pos_slope = plot_error_with_time(
+                    time_array, 
+                    pos_dist, 
+                    'position', 
+                    pos_error_plot_path, 
+                    save_prefix
+                )
+                
+                # Plot velocity error vs time
+                vel_error_plot_path = os.path.join(folder, f"{save_prefix}_velocity_error_vs_time.png")
+                vel_slope = plot_error_with_time(
+                    time_array, 
+                    vel_dist, 
+                    'velocity', 
+                    vel_error_plot_path, 
+                    save_prefix
+                )
+                
+                # Add error growth analysis to results
+                result_dic.update({
+                    'position_error_growth_rate': pos_slope if pos_slope is not None else 'N/A',
+                    'velocity_error_growth_rate': vel_slope if vel_slope is not None else 'N/A',
+                })
+                
+                print(f"Position error growth rate: {pos_slope:.3f}" if pos_slope is not None else "Position error growth rate: N/A")
+                print(f"Velocity error growth rate: {vel_slope:.3f}" if vel_slope is not None else "Velocity error growth rate: N/A")
 
         file_path = os.path.join(folder, "result.json")
         with open(file_path, 'w') as f: 
             json.dump(AllResults, f, indent=4)
+        
+
+
